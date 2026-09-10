@@ -1,0 +1,1133 @@
+---
+title: "Insufficient sleep ~ Noise exposure "
+date: today
+
+format: 
+  html:
+    toc: true
+
+execute: 
+  echo: true
+  warning: false
+
+embed-resources: true
+---
+
+```{r}
+#| echo: false
+#| eval: false
+# /////////////////////////////////////////////////////////////////////////////
+# Carlos Rodriguez, PhD. CU Anschutz Dept. of Family Medicine
+#
+# /////////////////////////////////////////////////////////////////////////////
+```
+
+```{r}
+library(tidyverse)
+library(ggpattern)
+library(gtsummary)
+library(broom)
+library(dfmtbx)
+library(splines)
+library(sf)
+library(spatialreg)
+```
+
+```{r}
+#| echo: false
+#| eval: false
+# Run noise.qmd
+# specify, but do not run census.R
+# run places.R (will source census.R within)
+# run models
+```
+
+```{r}
+# Load data
+# merged places comes from places.R script
+# Used .rds to preserve geometry column. Saving as .csv removes the <sf> object functionality
+data <- readRDS("D:\\rwjf_noise\\data\\prepped_data\\merged_places_2026-06-22.rds") 
+```
+
+# Number of tracts per data set
+* n.b. these represent totals. The number of observations where a CDC places outcome, census covariates, and noise exposure intersect will depend on the covariates chosen for a given model.
+```{r}
+# These were counted in the census_eda.R script.
+data.frame(
+  places = 2324,
+  census = 2498,
+  noise = 2493, # 2 are removed for santa catalina and san clemente islands,
+  places_and_noise = 2000) %>% 
+  format_gt_tbl()
+```
+
+# Comparisons of tracts with the CDC places outcome variable vs those without along dimensions of the CDC Covariates.
+* Two sample t-tests for continuous variables, Pearson's Chi-Square test for binary variables. Population weighted exposure in dB was converted to linear scale for calculating mean, sd, and pvalue.
+```{r}
+# Create a binary indicator for having the sleep outcome variable
+data <- data %>%
+  mutate(
+    has_cdc_sleep = ifelse(is.na(SLEEP_CrudePrev), 0, 1),
+    # Using log will pose problems for those tracts with 0 counts, log1p() instead
+    log_black_count = log1p(black_count),
+    log_native_count = log1p(native_count),
+    log_latino_count = log1p(latino_count),
+    log_white_count = log1p(white_count),
+    log_asian_count = log1p(asian_count)
+    )
+```
+
+```{r}
+has_sleep_comparisons <- data %>%
+  as.data.frame() %>%
+  select(
+    has_cdc_sleep, 
+    total_pop,
+    pop_density,
+    median_value, 
+    pct_homeowners,
+    pct_college,
+    pct_foreign_born, 
+    median_income, 
+    black_count, 
+    native_count, 
+    latino_count, 
+    white_count,
+    asian_count,
+    log_black_count, 
+    log_native_count, 
+    log_latino_count, 
+    log_white_count,
+    log_asian_count,
+    gte40db,
+    gte50db,
+    gte60db,
+    ) %>%
+  tbl_summary(
+    by = has_cdc_sleep,
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})"
+        )) %>%
+  add_p(
+    test = all_continuous() ~ "t.test",
+    test.args = all_tests("t.test") ~ list(var.equal = TRUE)
+  ) %>%
+  as_tibble()
+```
+
+```{r}
+#| echo: false
+#| eval: false
+View(data %>%
+  as.data.frame() %>%
+  select(total_pop, TotalPopulation) %>%
+  pivot_longer(cols = everything(), names_to = "type", values_to = "population") %>%
+  mutate(type = ifelse(type == "total_pop", "ACS", "CDC")) %>%
+  tbl_summary(
+    by = type,
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})")) %>%
+  add_p(
+    test = all_continuous() ~ "t.test",
+    test.args = all_tests("t.test") ~ list(var.equal = TRUE)) %>%
+  as_tibble())
+```
+
+```{r}
+# This chunk performs the statistical comparison of the population weighted 
+# exposure variable in linearized dB as opposed to the log scale, this is 
+# used for generating a p-value.
+pw_exp_db_lin_results <- data %>%
+  as.data.frame() %>%
+  select(
+    has_cdc_sleep, 
+    pw_exp_lin
+    ) %>%
+  tbl_summary(
+    by = has_cdc_sleep,
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})"
+        )) %>%
+  add_p(
+    test = all_continuous() ~ "t.test",
+    test.args = all_tests("t.test") ~ list(var.equal = TRUE)
+  ) %>%
+  as_tibble()
+
+# Comparison of the values of noise exposure.
+# This is to display the row for dB scale and the p value from the linear scale
+pw_exp_db_results <- data %>%
+  st_drop_geometry() %>%
+  group_by(has_cdc_sleep) %>%
+  summarise(
+    mean_db_lin = mean(pw_exp_lin),
+    sd_db_lin = sd(pw_exp_lin)
+  ) %>%
+  mutate(across(mean_db_lin:sd_db_lin, ~ round(10 * log10(.x), 2))) %>%
+  mutate(mean_sd = str_c(mean_db_lin, " (", sd_db_lin, ")")) %>%
+  select(has_cdc_sleep, mean_sd) %>%
+  pivot_wider(values_from = mean_sd, names_from = has_cdc_sleep) %>%
+  mutate(
+    `**Characteristic**` = "pw_exp_db",
+    `**p-value**` = pw_exp_db_lin_results$`**p-value**`
+    ) %>%
+  rename(`**0**  \nN = 493` = `0`, `**1**  \nN = 2,000` = `1`) %>%
+  select(3, everything())
+```
+
+```{r}
+# Create a final output table.
+final_output <- bind_rows(
+  has_sleep_comparisons,
+  pw_exp_db_results) 
+  
+old_names <- names(final_output)
+new_names <- str_remove_all(old_names, fixed("**"))
+names(final_output) <- new_names
+
+final_output %>%
+  format_gt_tbl()
+```
+
+
+
+# Plot the tracts without a CDC Insufficient Sleep variable
+* white dot indicates a CDC Sleep variable is available
+* total_pop captured from ACS
+```{r}
+centroids <- data %>%
+  filter(has_cdc_sleep == 1) %>%
+  st_centroid()
+
+data %>%
+  ggplot() +
+  geom_sf(aes(fill = total_pop), color = NA) +
+  geom_sf(
+    data = centroids,
+    shape = 21,
+    size = .45,
+    stroke = .25,
+    fill = NA,
+    color = "white") +
+  scale_fill_viridis_c() +
+  theme_minimal()
+```
+
+```{r}
+#| echo: false
+#| eval: false
+
+# Determine how many tracts have 0 total_pop and has an insufficient sleep dv
+# 17 total tracts have an ACS total_pop value of 0
+# 2 of those tracts have a cdc sleep variable
+data %>% 
+  as.data.frame() %>%
+  filter(total_pop == 0) %>% 
+  select(has_cdc_sleep) %>%
+  tbl_summary()
+```
+
+```{r}
+#| echo: false
+#| eval: false
+
+# Those that have a cdc_sleep value, and have a total population value of 0
+# what is the population value from the CDC places data set
+data %>% 
+  as.data.frame() %>%
+  filter(total_pop == 0) %>% 
+  select(TotalPopulation, has_cdc_sleep) %>%
+  tbl_summary()
+```
+
+# Plot of Noise exposure in dB and Insufficient Sleep Prevalence
+```{r}
+data %>%
+  select(pw_exp_db, SLEEP_CrudePrev) %>%
+  drop_na() %>%
+  ggplot(aes(x = pw_exp_db, y = SLEEP_CrudePrev)) +
+  geom_point(alpha = 1) +
+  geom_smooth() +
+  theme_minimal() +
+  xlab("Population Weighted Noise Exposure (dB)") +
+  ylab("Insufficient Sleep Prevalence (%)")
+
+# ggsave("sleep_vs_noise_a03.pdf")
+```
+
+# Plot of Noise exposure in linear scale and Insufficient Sleep Prevalence
+```{r}
+# Plot the linear version
+data %>%
+  select(pw_exp_lin, SLEEP_CrudePrev) %>%
+  drop_na() %>%
+  ggplot(aes(x = pw_exp_lin, y = SLEEP_CrudePrev)) +
+  geom_point(alpha = 1) +
+  geom_smooth() +
+  theme_minimal() +
+  xlab("Population Weighted Noise Exposure (dB)") +
+  ylab("Insufficient Sleep Prevalence (%)")
+```
+
+<!-- # Plot of average sleep and average noise after binning into 10 noise groups -->
+```{r}
+#| echo: false
+#| eval: false
+# Bin the data to see if the hockey stick shape of the plot of raw values is 
+# an artifact.
+# binned <- data %>%
+#   drop_na(pw_exp_db) %>%
+#   mutate(bin = cut_number(pw_exp_db, 10)) %>%
+#   group_by(bin) %>%
+#   summarise(
+#     mean_exposure = mean(pw_exp_db, na.rm = TRUE),
+#     mean_sleep = mean(SLEEP_CrudePrev, na.rm = TRUE),
+#     n = n()
+#   )
+
+# ggplot(binned, aes(mean_exposure, mean_sleep)) +
+#   geom_point(aes(size = n)) +
+#   geom_line() +
+#   theme_minimal()
+```
+
+```{r}
+# Create the additive log-ratio transformations for the race and ethnic categories
+data <- data %>%
+  mutate(
+    black_alr = log((black_count + 1)  / (white_count + 1)),
+    native_alr = log((native_count + 1) / (white_count + 1)),
+    latino_alr = log((latino_count + 1) / (white_count + 1)),
+    asian_alr = log((asian_count + 1)/ (white_count + 1)))
+```
+
+```{r}
+# Get the latitude and longitude of the tracts
+# *** Adding latitude and longitude caused errorsarlm models to error out with
+# a "system is computationally singular" message.
+data <- data %>%
+  mutate(
+    centroid = st_centroid(geometry))
+
+coords <- st_coordinates(data$centroid)
+
+data <- data %>%
+  mutate(
+    longitude = coords[, 1],
+    latitude  = coords[, 2]) %>%
+  select(-centroid)
+
+
+# Re-scale the lat and long coordinates
+# re-scaling prevents "system is computationally singular" error
+data <- data %>%
+  mutate(
+    lon_z = scale(longitude),
+    lat_z = scale(latitude))
+```
+
+```{r}
+# Create the distance from downtown LA variable
+tracts_utm <- st_transform(data, 26911)
+
+dtla <- st_sfc(
+  st_point(c(-118.2437, 34.0537)),
+  crs = 4326
+)
+
+dtla_utm <- st_transform(dtla, 26911)
+
+data <- data %>%
+  mutate(dist_dtla_km = as.numeric(st_distance(tracts_utm, dtla_utm)) / 1000)
+```
+
+```{r}
+# Categorize the median income variable into tertiles
+data <- data %>%
+  mutate(
+    median_income_tertile = as.character(ntile(median_income, 3)),
+    median_income_quartile = as.character(ntile(median_income, 4)),
+    median_income_quintile = as.character(ntile(median_income, 5)),
+  )
+
+data %>%
+  select(SLEEP_CrudePrev, pw_exp_db, median_income_quintile) %>%
+  drop_na() %>%
+  ggplot(aes(x = pw_exp_db, y = SLEEP_CrudePrev, color = median_income_quintile, group = median_income_quintile)) +
+  geom_point() +
+  geom_smooth() +
+  facet_wrap(~ median_income_quintile)
+
+
+
+```
+
+```{r}
+# center median_income
+data <- data %>%
+  mutate(
+    median_income_c = median_income - mean(median_income, na.rm = TRUE)
+  )
+```
+
+```{r}
+#| echo: false
+#| eval: false
+
+# Check outliers for sleep / dB
+
+# Sleep prevalence box plot
+data %>%
+  ggplot(., aes(y = SLEEP_CrudePrev)) +
+  geom_boxplot() +
+  theme_minimal()
+
+data %>%
+  ggplot(., aes(x = gte40db, y = SLEEP_CrudePrev, group = gte40db)) +
+  geom_boxplot() +
+  theme_minimal()
+
+
+data %>%
+  ggplot(., aes(x = gte50db, y = SLEEP_CrudePrev, group = gte50db)) +
+  geom_boxplot() +
+  theme_minimal()
+
+data %>%
+  ggplot(., aes(x = gte60db, y = SLEEP_CrudePrev, group = gte60db)) +
+  geom_boxplot() +
+  theme_minimal()
+
+
+# Box plot of pw_exp_db in continuous noise
+data %>%
+  ggplot(., aes(y = pw_exp_db)) +
+  geom_boxplot() +
+  theme_minimal()
+
+data <- data %>%
+  mutate(
+    Q1 = quantile(SLEEP_CrudePrev, 0.25, na.rm = TRUE),
+    Q3 = quantile(SLEEP_CrudePrev, 0.75, na.rm = TRUE),
+    IQR = IQR(SLEEP_CrudePrev, na.rm = TRUE), 
+    lower = Q1 - 1.5 * IQR,
+    upper = Q3 + 1.5 * IQR,
+    is_outlier = ifelse(SLEEP_CrudePrev < lower | SLEEP_CrudePrev > upper, 1, 0)) 
+    
+data %>%
+  pull(is_outlier) %>%
+  table()
+
+# data <- data %>% 
+#   filter(is_outlier == 0)
+```
+
+
+## Group sample sizes and proportions per db cutoff value
+```{r}
+data %>%
+  as.data.frame() %>%
+  select(gte40db, gte50db, gte60db) %>%
+  mutate(across(everything(), ~ factor(.x)) ) %>%
+  tbl_summary() %>%
+  as_tibble()
+```
+
+
+
+```{r}
+# Calcualte descriptives on the SLEEP_crudePrev variable
+data %>%
+  as.data.frame() %>%
+  select(SLEEP_CrudePrev) %>%
+  drop_na() %>%
+  tbl_summary(
+    statistic = list(SLEEP_CrudePrev ~ "{median} ({p25}, {p75}); {mean} ({sd}); {min} - {max}"))
+```
+
+```{r}
+# Calculate the width of the 95% CI
+data <- data %>%
+  mutate(
+    SLEEP_Crude95CI_lo = as.numeric(substr(SLEEP_Crude95CI, 2, 5)),
+    SLEEP_Crude95CI_hi = as.numeric(substr(SLEEP_Crude95CI, 8, 11)),
+    SLEEP_Crude95CI_width = SLEEP_Crude95CI_hi - SLEEP_Crude95CI_lo,
+    SLEEP_CrudeSE = SLEEP_Crude95CI_width / (2 * 1.96))
+
+data %>%
+  as.data.frame() %>%
+  select(SLEEP_Crude95CI_width) %>%
+  drop_na() %>%
+  tbl_summary(
+     statistic = list(SLEEP_Crude95CI_width ~ "{median} ({p25}, {p75}); {mean} ({sd}); {min} - {max}"))
+
+
+data %>%
+  ggplot(aes(x = total_pop, y = SLEEP_Crude95CI_width)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+```
+
+```{r}
+# SES Vars with polygon for merging
+ses_vars_w_poly <- data %>%
+  st_drop_geometry() %>%
+  select(GEOID, median_income, pct_homeowners, pct_college, median_value) %>%
+  drop_na()
+
+pca <- prcomp(
+  ses_vars_w_poly %>% select(-GEOID),
+  center = TRUE,
+  scale. = TRUE
+)
+
+summary(pca)
+
+pca$rotation
+
+# Higher values as higher SES
+ses_vars_w_poly$SES_PC1 <- -pca$x[, 1]
+
+data <- data %>%
+  left_join(ses_vars_w_poly %>% select(GEOID, SES_PC1), by = "GEOID")
+```
+
+# Models with a dichotomous predictor of noise exposure
+<!-- The primary predictor of interest is gte50db -->
+
+```{r}
+vars <- c("gte40db", "gte50db", "gte60db")
+
+# *** adding , "latitude", "longitude" makes the models error out system is 
+# computationally singular in the errorsarlm model
+co_vars <-c(
+  "SES_PC1",
+  # "total_pop",
+  # "median_value", 
+  # "pct_homeowners",
+  # "median_income",
+  # "pct_college",
+  "pct_foreign_born", 
+  "black_alr", 
+  "native_alr", 
+  "asian_alr", 
+  "latino_alr",
+  "median_ageE"
+  # "lat_z",
+  # "lon_z",
+  # "dist_dtla_km"
+  )
+
+style <- "W" # Other option is "B"
+```
+
+```{r}
+fit_dichotomous_model <- function(x) {
+  # Create a copy of the main data set in the workspace
+  mod_data <- data
+
+  # Create a formula based on the input predictor variable
+  # formula <- as.formula(str_c("SLEEP_CrudePrev ~ ", x)) # Crude/unadjusted model
+  formula <- as.formula(str_c("SLEEP_CrudePrev ~ ", x, " + ", paste0(co_vars, collapse = " + "))) # Adjusted model
+  # formula <- as.formula(str_c(
+  #   "SLEEP_CrudePrev ~ ", x, " + median_income_c:", x, " + ", paste0(co_vars, collapse = " + "))) # Interaction models
+
+  # print(formula)
+
+  # Fit the OLS model
+  model <- lm(formula, data = mod_data, na.action = na.exclude)
+
+  # Get the residuals in a test data frame
+  mod_data <- mod_data %>%
+    mutate(residuals = residuals(model))
+
+  # Drop the rows where values for the model are missing
+  mod_data <- mod_data %>%
+    filter(!is.na(residuals))
+
+  # Plot the 2000 tracts that were included in the analysis
+  centroids <- mod_data %>%
+    filter(!!sym(x) == 1) %>%
+    st_centroid()
+
+  plt <-  mod_data %>%
+    ggplot() +
+    geom_sf(aes(fill = SLEEP_CrudePrev), color = NA) +
+    geom_sf(
+      data = centroids,
+      shape = 21,
+      size = .45,
+      stroke = .25,
+      fill = NA,
+      color = "white") +
+    scale_fill_viridis_c() +
+    theme_minimal()
+
+  # Construct a neighbors list from polygon list
+  # *** produced a warning about some observations not having any neighbors 
+  # because the intersection of tracts with noise AND tracts with a CDC Places
+  # outcome results in some tracts without any neighbors
+  nb <- spdep::poly2nb(
+    mod_data, 
+    queen = TRUE) # *** Try k nearest neighbors
+
+  # Create the spatial weights from a neighbors list. The zero policy sets
+  # weights vectors of zero length for regions without any neighbors
+  lw <- spdep::nb2listw(
+    nb, 
+    style = style, 
+    zero.policy = TRUE)
+
+  # Moran's I test on the ols model
+  moran_results <- spdep::moran.test(
+    mod_data$residuals, #cannot have missing values
+    lw 
+  )
+
+  # Spatial error model
+  sem <- errorsarlm(
+    formula,
+    data = mod_data,
+    listw = lw,
+    zero.policy = TRUE,
+    na.action = na.exclude
+  )
+
+  # Moran's I test on the spatial error model
+  moran_results_sem <- spdep::moran.test(
+    residuals(sem),
+    lw
+  )
+
+  # GLM Models
+  glm_model <- glm(formula, data = mod_data, family = Gamma(link = "log"), na.action = na.exclude)
+
+  # OLS models with log(sleep prevalence) on LHS
+  mod_data <- mod_data %>%
+    mutate(SLEEP_CrudePrev = log(SLEEP_CrudePrev))
+
+  log_model <- lm(formula, data = mod_data, na.action = na.exclude)
+
+  # Collect output
+  return(list(model, plt, moran_results, sem, moran_results_sem, log_model, glm_model))
+
+}
+
+results <- map(vars, fit_dichotomous_model)
+```
+
+```{r}
+#| echo: false
+#| eval: false
+# output to an excel file
+# need 
+
+# Output the results from the ols and sem models
+# View(
+  bind_rows(
+  broom::tidy(results[[1]][[1]]) %>% mutate(poi = "gte40db", type = "ols"),
+  broom::tidy(results[[1]][[4]]) %>% mutate(poi = "gte40db", type = "sem"),
+  broom::tidy(results[[2]][[1]]) %>% mutate(poi = "gte50db", type = "ols"),
+  broom::tidy(results[[2]][[4]]) %>% mutate(poi = "gte50db", type = "sem"),
+  broom::tidy(results[[3]][[1]]) %>% mutate(poi = "gte60db", type = "ols"),
+  broom::tidy(results[[3]][[4]]) %>% mutate(poi = "gte60db", type = "sem")) %>%
+  write_csv(., "D:\\rwjf_noise\\scripts\\model_results_dichotomous_w_pca.csv")
+# )
+
+# output the results from the models where the log of the dv is used
+bind_rows(
+  broom::tidy(results[[1]][[6]]) %>% mutate(poi = "gte40db", type = "ols"),
+  broom::tidy(results[[2]][[6]]) %>% mutate(poi = "gte50db", type = "ols"),
+  broom::tidy(results[[3]][[6]]) %>% mutate(poi = "gte60db", type = "ols")) %>%
+  write_csv(., "D:\\rwjf_noise\\scripts\\model_results_dichotomous_logdv.csv")
+
+# output the results from the glm models
+# *** Need to confirm distribution gamma, poisson, etc.
+bind_rows(
+  broom::tidy(results[[1]][[7]]) %>% mutate(poi = "gte40db", type = "glm"),
+  broom::tidy(results[[2]][[7]]) %>% mutate(poi = "gte50db", type = "glm"),
+  broom::tidy(results[[3]][[7]]) %>% mutate(poi = "gte60db", type = "glm")) %>%
+  write_csv(., "D:\\rwjf_noise\\scripts\\model_results_dichotomous_glm.csv")
+```
+
+
+
+## Models
+## dB Greater than or equal to 40 dB
+### OLS Regression output
+```{r}
+tbl_regression(results[[1]][[1]])
+```
+
+### Plot of Insufficient Sleep Prevalence overlaid with tracts where the average dB value is greater than or equal to 40 dB
+```{r}
+results[[1]][[2]]
+```
+
+### Moran's I on OLS model
+```{r}
+results[[1]][[3]]
+```
+
+### Spatial error model output
+```{r}
+summary(results[[1]][[4]])
+```
+
+### Moran's I on spatial error model
+```{r}
+results[[1]][[5]]
+```
+
+### log(sleep prevalence) vs glm() model
+```{r}
+# Compare glm() and model with log(sleep prevalence)
+
+# output for OLS model with log(sleep prevalence)
+summary(results[[1]][[6]])
+
+# Plot residuals for OLS model with log(sleep prevalence)
+plot(results[[1]][[6]], which = 1)
+
+# Output for GLM model
+summary(results[[1]][[7]])
+
+# Plot residuals for GLM model
+plot(fitted(results[[1]][[7]]),
+     residuals(results[[1]][[7]], type = "deviance"))
+abline(h = 0, lty = 2)
+```
+
+## dB Greater than or equal to 50 dB
+<!-- This is one of the primary analyses -->
+### OLS Regression output
+```{r}
+tbl_regression(results[[2]][[1]])
+```
+
+### Plot of Insufficient Sleep Prevalence overlaid with tracts where the average dB value is greater than or equal to 50 dB
+```{r}
+results[[2]][[2]]
+```
+
+### Moran's I on OLS model
+```{r}
+results[[2]][[3]]
+```
+
+### Spatial error model output
+```{r}
+summary(results[[2]][[4]])
+```
+
+### Moran's I on spatial error model
+```{r}
+results[[2]][[5]]
+```
+
+## dB Greater than or equal to 60 dB
+### OLS Regression output
+```{r}
+tbl_regression(results[[3]][[1]])
+```
+
+### Plot of Insufficient Sleep Prevalence overlaid with tracts where the average dB value is greater than or equal to 60 dB
+```{r}
+results[[3]][[2]]
+```
+
+### Moran's I on OLS model
+```{r}
+results[[3]][[3]]
+```
+
+### Spatial error model output
+```{r}
+summary(results[[3]][[4]])
+```
+
+### Moran's I on spatial error model
+```{r}
+results[[3]][[5]]
+```
+
+# Models with binned noise predictors of noise
+```{r}
+data <- data %>%
+  mutate(
+    binned_5db = cut(
+      pw_exp_db,
+      breaks = seq(30, 75, by = 5),
+      right = FALSE,
+      include.lowest = TRUE),
+    binned_10db = cut(
+      pw_exp_db,
+      breaks = seq(30, 80, by = 10),
+      right = FALSE,
+      include.lowest = TRUE)
+  )
+```
+
+```{r}
+# Check the distribution of the binned 5db increments
+data %>%
+  data.frame() %>%
+  group_by(binned_5db) %>%
+  count()
+```
+
+```{r}
+# Check the distribution of the binned 10db increments
+data %>%
+  data.frame() %>%
+  group_by(binned_10db) %>%
+  count()
+```
+
+```{r}
+# Shuffle some of the data points to avoid sparse groupings
+data <- data %>%
+  mutate(
+    binned_5db = if_else(binned_5db %in% c("[65,70)", "[70,75]"), "[60,65)", binned_5db),
+    binned_10db = if_else(binned_10db %in% c("[70,80]"), "[60,70)", binned_10db)
+  )
+```
+
+```{r}
+# Set the binned variables to loop over
+vars <- c("binned_5db", "binned_10db")
+
+fit_binned_model <- function(x) {
+  # Create a copy of the main data set in the workspace
+  mod_data <- data
+
+  # Create a formula based on the input predictor variable
+  formula <- as.formula(str_c("SLEEP_CrudePrev ~ ", x, " + ", paste0(co_vars, collapse = " + ")))
+  # print(formula)
+
+  # Fit the OLS model
+  model <- lm(formula, data = mod_data, na.action = na.exclude)
+
+  # Get the residuals in a test data frame
+  mod_data <- mod_data %>%
+    mutate(residuals = residuals(model))
+
+  # Drop the rows where values for the model are missing
+  mod_data <- mod_data %>%
+    filter(!is.na(residuals))
+
+  # Plot the 2000 tracts that were included in the analysis
+  centroids <- mod_data %>%
+    filter(!!sym(x) == 1) %>%
+    st_centroid()
+
+  plt <-  mod_data %>%
+    ggplot() +
+    geom_sf(aes(fill = SLEEP_CrudePrev), color = NA) +
+    geom_sf(
+      data = centroids,
+      shape = 21,
+      size = .45,
+      stroke = .25,
+      fill = NA,
+      color = "white") +
+    scale_fill_viridis_c() +
+    theme_minimal()
+
+  # Construct a neighbors list from polygon list
+  # *** produced a warning about some observations not having any neighbors 
+  # because the intersection of tracts with noise AND tracts with a CDC Places
+  # outcome results in some tracts without any neighbors
+  nb <- spdep::poly2nb(
+    mod_data, 
+    queen = TRUE)
+
+  # Create the spatial weights from a neighbors list. The zero policy sets
+  # weights vectors of zero length for regions without any neighbors
+  lw <- spdep::nb2listw(
+    nb, 
+    style = style, 
+    zero.policy = TRUE)
+
+  # Moran's I test on the ols model
+  moran_results <- spdep::moran.test(
+    mod_data$residuals, #cannot have missing values
+    lw 
+  )
+
+  # Spatial error model
+  sem <- errorsarlm(
+    formula,
+    data = mod_data,
+    listw = lw,
+    zero.policy = TRUE,
+    na.action = na.exclude
+  )
+
+  # Moran's I test on the spatial error model
+  moran_results_sem <- spdep::moran.test(
+    residuals(sem),
+    lw
+  )
+
+  # GLM Models
+  # glm_model <- glm(formula, data = mod_data, family = Gamma(link = "log"), na.action = na.exclude)
+
+  # OLS models with log(sleep prevalence) on LHS
+  # mod_data <- mod_data %>%
+  #   mutate(SLEEP_CrudePrev = log(SLEEP_CrudePrev))
+
+  # log_model <- lm(formula, data = mod_data, na.action = na.exclude)
+
+  # Collect output
+  return(list(model, plt, moran_results, sem, moran_results_sem))
+
+}
+
+results_binned <- map(vars, fit_binned_model)
+```
+
+
+```{r}
+#| echo: false
+#| eval: false
+
+# Output to .csv files
+bind_rows(
+  broom::tidy(results_binned[[1]][[1]]) %>% mutate(poi = "bin_5db", type = "ols"),
+  broom::tidy(results_binned[[1]][[4]]) %>% mutate(poi = "bin_5db", type = "sem"),
+  broom::tidy(results_binned[[2]][[1]]) %>% mutate(poi = "bin_10db", type = "ols"),
+  broom::tidy(results_binned[[2]][[4]]) %>% mutate(poi = "bin_10db", type = "sem")) %>%
+write_csv(., "D:\\rwjf_noise\\scripts\\model_results_binned.csv")
+
+```
+
+
+```{r}
+#| echo: false
+#| eval: false
+
+
+# binned 5db
+summary(results_binned[[1]][[1]])
+
+
+# Fit a model without the noise predictor
+formula <- as.formula(str_c("SLEEP_CrudePrev ~ ", paste0(co_vars, collapse = " + ")))
+no_noise <- lm(formula, data = data)
+  
+# Overall F test is significant, suggesting model with noise predictor results
+# in a better fitting model
+anova(no_noise, results_binned[[1]][[1]])
+
+# Show the emmeans
+library(emmeans)
+
+emm <- emmeans(results_binned[[1]][[1]], ~ binned_5db)
+
+pairs(emm)
+```
+
+
+
+# Models with a continuous predictor of noise exposure
+```{r}
+# Create a variable for a piece wise linear model
+
+# Set the segment knot value
+segment_knot_val <- 50
+
+data <- data %>%
+  mutate(
+    segment = ifelse(pw_exp_db > segment_knot_val, pw_exp_db - segment_knot_val, 0)
+  )
+
+# Set a series of formula to iterate over
+formulas <- c(
+  str_c("SLEEP_CrudePrev ~ pw_exp_db + ", paste0(co_vars, collapse = " + ")),
+  str_c("SLEEP_CrudePrev ~ pw_exp_db + segment + ", paste0(co_vars, collapse = " + "))
+  # str_c("SLEEP_CrudePrev ~ pw_exp_db"),
+  # str_c("SLEEP_CrudePrev ~ pw_exp_db + segment")
+
+)
+
+
+fit_continuous_model <- function(x) {
+  # Create a copy of the main data set in the workspace
+  mod_data <- data
+
+  # Create a formula based on the input predictor variable
+  formula <- as.formula(x)
+  # print(formula)
+
+  # Fit the ols model
+  model <- lm(formula, data = mod_data, na.action = na.exclude)
+
+  # Get the residuals in a test data frame
+  mod_data <- mod_data %>%
+    mutate(residuals = residuals(model))
+
+  # Drop the rows where values for the model are missing
+  mod_data <- mod_data %>%
+    filter(!is.na(residuals))
+
+  # Construct a neighbors list from polygon list
+  # *** produced a warning about some observations not having any neighbors 
+  # because the intersection of tracts with noise AND tracts with a CDC Places
+  # outcome results in some tracts without any neighbors
+
+  # Commented out to try using a knn algorithm
+  nb <- spdep::poly2nb(
+    mod_data, 
+    queen = TRUE)
+
+  # Alternate form of constructing the neighbors list.
+  # Plot the 2000 tracts that were included in the analysis
+  centroids <- mod_data %>%
+    st_centroid()
+
+  coords <- st_coordinates(centroids)
+  knn <- spdep::knearneigh(coords, k = 4)
+  # nb <- spdep::knn2nb(knn)
+
+  # Create the spatial weights from a neighbors list. The zero policy sets
+  # weights vectors of zero length for regions without any neighbors
+  lw <- spdep::nb2listw(
+    nb, 
+    style = style, 
+    zero.policy = TRUE)
+
+  # Moran's I test revealed p less than .05 for all dichotomous variables
+  # There is evidence for spatial auto correlation, need a spatial model
+  moran_results <- spdep::moran.test(
+    mod_data$residuals, #cannot have missing values
+    lw 
+  )
+
+  # print(moran_results)
+
+  # Spatial error model
+  sem <- errorsarlm(
+    formula,
+    data = mod_data,
+    listw = lw,
+    zero.policy = TRUE,
+    na.action = na.exclude
+  )
+
+  moran_results_sem <- spdep::moran.test(
+    residuals(sem),
+    lw
+  )
+
+  return(list(model, moran_results, sem, moran_results_sem))
+
+}
+
+results_continuous <- map(formulas, fit_continuous_model)
+```
+
+```{r}
+#| echo: false
+#| eval: false
+
+# Output to .csv files
+bind_rows(
+  broom::tidy(results_continuous[[1]][[1]]) %>% mutate(poi = "con_db", type = "ols"),
+  broom::tidy(results_continuous[[1]][[3]]) %>% mutate(poi = "con_db", type = "sem"),
+  broom::tidy(results_continuous[[2]][[1]]) %>% mutate(poi = "con_db", type = "ols"),
+  broom::tidy(results_continuous[[2]][[3]]) %>% mutate(poi = "con_db", type = "sem")) %>%
+arrange(type) %>%
+write_csv(., "D:\\rwjf_noise\\scripts\\model_results_continuous_w_pca.csv")
+```
+
+## Continuous Model 1
+```{r}
+# OLS model
+tbl_regression(results_continuous[[1]][[1]])
+```
+
+```{r}
+# Morans I on OLS Model
+results_continuous[[1]][[2]]
+```
+
+```{r}
+# SEM
+summary(results_continuous[[1]][[3]])
+```
+
+```{r}
+# Morans I on SEM
+results_continuous[[1]][[4]]
+```
+
+<!-- Piecewise Model -->
+## Continuous Model 2 (piece-wise/segmented model)
+```{r}
+tbl_regression(results_continuous[[2]][[1]])
+```
+
+```{r}
+# Morans I on OLS model
+results_continuous[[2]][[2]]
+```
+
+```{r}
+# SEM Piecewise
+summary(results_continuous[[2]][[3]])
+```
+
+```{r}
+# Morans I on the Piecewise Segmented Model
+results_continuous[[2]][[4]]
+```
+
+<!-- Comparison of models -->
+```{r}
+#| echo: false
+#| eval: false
+
+
+# ANOVA reveals that the segmented model has better fit than the non-segmented model.
+anova(
+  results_continuous[[1]][[1]],
+  results_continuous[[2]][[1]])
+
+# Splines model
+mod_spline <- lm(
+  SLEEP_CrudePrev ~ ns(pw_exp_db, df = 4) + median_value + pct_homeowners + pct_foreign_born + median_income + black_alr + native_alr + asian_alr + latino_alr,
+  data = data
+)
+
+summary(mod_spline)
+
+anova(
+  results_continuous[[2]][[1]],
+  mod_spline
+)
+```
+
+
+## Correlation matrix between covariates
+```{r}
+# Correlate median income, pct_homeowners, pct_college,
+View(
+  cor(
+  data %>% 
+    st_drop_geometry() %>% 
+    select(
+      pw_exp_db, 
+      median_value, 
+      pct_homeowners, 
+      median_income, 
+      pct_college, 
+      pct_foreign_born,
+      black_alr,
+      native_alr,
+      asian_alr,
+      latino_alr), 
+  use = "pairwise.complete.obs") %>%
+data.frame()
+)
+```

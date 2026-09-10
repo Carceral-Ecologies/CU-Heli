@@ -1,0 +1,468 @@
+---
+params:
+  by_variable: 2018
+
+title: "RWJF Helicopter Noise - Data Processing Workflow"
+subtitle: "`r params$by_variable`"
+
+format: 
+  html:
+    toc: true
+
+execute:
+  warning: false
+  message: false # Also hides package loading messages
+
+embed-resources: true
+---
+
+
+```{r}
+#| eval: false
+#| echo: false
+# -----------------------------------------------------------------------------
+# Carlos Rodriguez, PhD. CU Anschutz Dept. of Family Medicine
+# RWJF HelicopterSleep
+
+# Data processing
+# The purpose of this script is to generate a file where population weighted 
+# noise values are calculated for a given year, using the UCIC noise and 
+# landscan data sets.
+# -----------------------------------------------------------------------------
+```
+
+```{r, warning = FALSE, message = FALSE}
+#%% Libraries
+  library(tidyverse)
+  library(tidycensus)
+  library(sf)
+  library(tidyterra)
+  library(terra)
+  library(exactextractr)
+```
+
+<!-- //////////////////////// REPORT CONFIGURATION //////////////////////// -->
+<!-- This section specifies whether or not to filter the data if the by 
+variable is set to by_clinic, sets rules for displaying pvalues in tables based
+on whether the by variable is set to by_site_type, and sets the test argument 
+to t-test if the argument is by site_type -->
+
+```{r}
+year <- params$by_variable
+noise_path_prefix <- "D:\\rwjf_noise\\data\\noise\\annual\\Noise_"
+noise_path_suffix <- "_Noise.csv"
+noise_file <- str_c(noise_path_prefix, year, noise_path_suffix)
+
+
+ls_path_prefix <- "D:\\rwjf_noise\\data\\landscan\\landscan-mosaic_timeseries-"
+ls_path_suffix <- "-assets\\landscan_mosaic_timeseries_"
+
+landscan_path <- str_c(ls_path_prefix, year, ls_path_suffix, year, ".tif")
+```
+
+# Load Landscan data
+```{r}
+#%% Load the landscan population raster stored locally
+# has resolution of 1/1200 degree
+# coordinate refeference system (crs) is 4326
+pop <- rast(landscan_path)
+
+# Older version used this file
+# pop <- rast("D:\\rwjf_noise\\data\\landscan\\landscan-mosaic-unitedstates-v1-assets\\landscan-mosaic-unitedstates-v1.tif")
+
+# pop <- rast("D:\\rwjf_noise\\data\\landscan\\landscan-global-2018-assets\\landscan-global-2018.tif")
+
+# crs(pop)
+# res(pop)
+```
+
+# Load UCIC noise data
+```{r}
+#%% Load and prepare noise data 
+# File is .csv format with a noise level for each lat and long coordinates.
+# Rename coordinate columns for convenience.
+exposure_df <-read_csv(noise_file, show_col_types = FALSE) %>%
+    rename(lon = Longitude, lat = Latitude) %>%
+    mutate(L_night_ge32 = ifelse(L_night >= 32, 1, 0))
+```
+
+## Display data structure
+```{r}
+str(exposure_df)
+```
+
+## Display a sample of rows
+```{r}
+# Display noise exposure data frame
+exposure_df %>% 
+  slice_sample(n = 6)
+```
+
+
+# Load LA County tracts
+```{r}
+#%% Prepare LA County tracts object
+options(tigris_progress_bar = FALSE)
+options(tigris_use_cache = TRUE)
+
+suppressMessages({
+# Load LA County tracts as simple features (sf) from tidycensus
+# crs loads as 4269
+tracts <- get_acs(
+  geography = "tract",
+
+  # Corresponds to total population variable, not used but argument needs to be
+  # set for the function to work
+  variables = "B01001_001E",   
+  state = "CA",
+  county = "Los Angeles",
+  geometry = TRUE,
+  year = year
+)
+})
+
+# crs(tracts)
+```
+
+## Plot raw noise data overlaid with LA county census tracts
+### Create a simple features object from raw noise data
+```{r}
+# Set seed for sample_frac()
+set.seed(12345)
+
+# Samples a fraction of the exposure data frame for plotting, otherwise it's too
+# computationally intensive to plot. Complete data set is over 2million rows.
+exposure_sf <- st_as_sf(
+  exposure_df %>% 
+    sample_frac(.1), 
+  coords = c("lon", "lat"), 
+  crs = 4326)
+
+# Transform tracts crs from 4269 to 4326
+tracts <- st_transform(tracts, 4326)
+
+# Check if both exposure and tracts have the same crs
+st_crs(exposure_sf) == st_crs(tracts)
+```
+
+### Create a clipping polygon to crop maps to excude San Celemente and Santa Catalina Islands
+```{r}
+# Get the minimum latitude value from the exposure data to use as 
+# a cutoff for removing the islands
+lat_cutoff <- min(exposure_df$lat)
+
+# Create a bb object of LA County Tracts
+bb <- st_bbox(tracts)
+
+# Modify the bb object's y minimum value
+# uses the previously defined cut off value above to raise the souther edge
+bb["ymin"] <- lat_cutoff   
+
+# Create an sfc object from the modified bb object that will be used to clip
+# away the islands
+clip_poly <- st_as_sfc(bb)
+```
+
+### Crop tracts
+```{r}
+# Crop the tracts by taking the overlap between the tracts sf object
+# and the clipping polygon.
+la_tracts_cropped <- st_intersection(tracts, clip_poly)
+```
+
+### Plot raw noise data
+- white specks appear due to random sampling of dat points
+```{r}
+# Plot the data using the sf objects
+ggplot() +
+  geom_sf(data = exposure_sf, aes(color = L_night), size = 0.5, alpha = 0.8) +
+  geom_sf(data = la_tracts_cropped, fill = NA, color = "white", alpha = 0.8, linewidth = .1) +
+  coord_sf() +
+  labs(
+    title = str_c("Average", year, " L_night values (dB) in LA County (not in Landscan space)"),
+    color = "Ldn (dB)") +
+  theme_minimal()
+```
+
+# Prepare LA County tracts
+Workflow here is to go from from sf --> spatial vector
+```{r}
+# remove rows where geometry is empty
+# Tracts where GEOID end in 9901:9903 with no geometry are removed
+# Empty tracts must be removed to successfully perform exact_extract() in a
+# downstream step, otherwise "fail to get geometry extent" errors arise.
+# la_tracts_cropped <- la_tracts_cropped %>%
+#   filter(!st_is_empty(la_tracts_cropped))
+
+# Convert to spatial vector to be used for cropping
+la_vect <- vect(la_tracts_cropped)
+
+# Check if the tracts and pop have the same crs
+same.crs(la_vect, pop)
+```
+
+# Crop Landscan to pixels within the LA county
+```{r}
+#%% Crop the landscan population raster
+# crop and mask have different functions, crop is to establish the bounding box
+# of pop to that of la_vect, and mask is to set any value outside the tracts, 
+# but within the bbox to NA
+la_pop <- mask(crop(pop, la_vect), la_vect)
+
+cells_w_missing_values <- global(la_pop, "isNA", na.rm = FALSE)
+```
+
+```{r}
+ggplot() +
+  geom_spatraster(data = la_pop) +
+  geom_sf(data = la_tracts_cropped, fill = NA, color = "white", linewidth = 0.1) +
+  labs(
+    title = "Landscan pop values",
+    fill = "") +
+  theme_minimal()
+```
+
+# Updated workflow
+Since the exposure data is already in a regularly spaced grid, one approach is to rasterize the noise exposure data to its native grid after importing from .csv file and then resampling to the landscan grid.
+
+## Rasterize exposure data frame
+* Perform a linear transformation of the dB values before rasterizing
+```{r}
+# Linearize the dB values
+exposure_df <- exposure_df %>%
+  mutate(L_night_lin = 10 ^ (L_night/10))
+
+# Create raster directly from points, instead of points to spatial vector to raster
+exposure_rast <- rast(
+  exposure_df[, c("lon", "lat", "L_night_lin")],
+  type = "xyz",
+  crs = "EPSG:4326"
+)
+```
+
+```{r}
+# Resolution of exposure raster is approximately 111.1 meeters by 66.7 meters.
+res(exposure_rast)
+```
+
+## Resample the exposure raster
+* Resample the linear transformed variables
+```{r}
+# Resample the exposure raster to landscan grid
+exp_landscan_lin <- resample(
+  exposure_rast,
+  la_pop,
+  method = "bilinear"
+)
+```
+
+## Transform the resampled exposure raster back to dB
+```{r}
+# Convert exposure raster back to dB
+exp_landscan_db <- 10 * log10(exp_landscan_lin)
+```
+
+## Check resolution of rasters
+```{r}
+# Check the resolutions of exp_landscan and la_pop
+res(exp_landscan_lin)
+res(exp_landscan_db)
+res(la_pop)
+```
+
+```{r}
+#| eval: false 
+#| echo: false
+
+
+## Plot the cropped exposure raster overlaid with tracts
+
+ggplot() +
+  geom_spatraster(data = exp_landscan_db) +
+  geom_sf(data = la_tracts_cropped, fill = NA, color = "white", linewidth = 0.1) +
+  labs(
+    title = "Average L_night values (dB) in LA County (resampled to Landscan space)",
+    fill = "dB") +
+  theme_minimal()
+
+ggplot() +
+  geom_spatraster(data = la_pop)
+
+```
+
+# Approach 1: Calculate the tract level population-weighted values of noise exposure using the linear transformed dB values
+```{r}
+# Compare la_pop and exp_landscan geometries
+# At this point la_pop is cropped to exclude Santa Catalina and San Celemente islands
+compareGeom(la_pop, exp_landscan_lin)
+```
+
+```{r}
+# Create a weighted value for each pixel by element-wise multiplication of the
+# population and exposure rasters
+weighted <- exp_landscan_lin * la_pop
+```
+
+```{r}
+# Check the range of values
+minmax(weighted)
+```
+
+```{r, message = FALSE}
+#%% Calculated a weighted exposure variable & plot
+num <- exact_extract(weighted, la_tracts_cropped, 'sum', progress = FALSE)
+
+den <- exact_extract(la_pop, la_tracts_cropped, 'sum', progress = FALSE)
+
+# Set the population weighted exposure variable by dividing num by den
+la_tracts_cropped <- la_tracts_cropped %>%
+  mutate(pw_exp_lin = num / den)
+
+# Convert the linearized noise levels back to dB
+la_tracts_cropped <- la_tracts_cropped %>%
+  mutate(pw_exp_db = 10 * log10(pw_exp_lin))
+```
+
+## Plot population weighted exposure (dB) by tract
+* Approach 1 = noise --> linear transform --> resample --> aggregate --> transform to dB
+```{r}
+# Plot population weighted exposure by tract
+la_tracts_cropped %>%
+  ggplot() +
+    geom_sf(aes(fill = pw_exp_db)) +
+    scale_fill_viridis_c() +
+    labs(title = "Population-Weighted Exposure by Tract (dB)") +
+    theme_minimal()
+```
+
+# Create population weighted exposure variable in dB (rather than linearly transformed values, pw_exp_)
+```{r}
+weighted <- exp_landscan_db * la_pop
+```
+
+```{r}
+minmax(weighted)
+```
+
+```{r}
+#%% Calculated a weighted exposure variable & plot
+num <- exact_extract(weighted, la_tracts_cropped, 'sum', progress = FALSE)
+den <- exact_extract(la_pop, la_tracts_cropped, 'sum', progress = FALSE)
+
+# Set the population weighted exposure variable by dividing num by den
+la_tracts_cropped <- la_tracts_cropped %>%
+  mutate(pw_exp_db2 = num / den)
+
+# Create a variable representing the sum of the landscan population values for each tract
+la_tracts_cropped <- la_tracts_cropped %>%
+  mutate(population_sum = den)
+```
+
+## Plot differences between two approaches
+```{r}
+la_tracts_cropped <- la_tracts_cropped %>%
+  mutate(diff = pw_exp_db2 - pw_exp_db)
+```
+
+```{r}
+la_tracts_cropped %>%
+  ggplot() +
+    geom_sf(aes(fill = diff)) +
+    scale_fill_viridis_c() +
+    labs(title = "Differences in population weighted exposure values (db2 - db)") +
+    theme_minimal()
+```
+
+# Dichotomize tract level population weighted dB values at 40, 50, and 60 dB
+```{r}
+la_tracts_cropped <- la_tracts_cropped %>%
+  mutate(
+    gte40db = ifelse(pw_exp_db >= 40, 1, 0),
+    gte50db = ifelse(pw_exp_db >= 50, 1, 0),
+    gte60db = ifelse(pw_exp_db >= 60, 1, 0)
+    )
+```
+
+## Tracts where population weighted average annual exposure is >= 40 dB
+```{r}
+la_tracts_cropped %>%
+  ggplot() +
+    geom_sf(aes(fill = gte40db)) +
+    scale_fill_viridis_c() +
+    labs(title = "Population-Weighted Exposure by Tract (dB)") +
+    theme_minimal()
+```
+
+```{r}
+# Proportion of tracts where population weighted average annual exposure greater than or equal to 40 dB
+# results in 93% of tracts out of 2493
+la_tracts_cropped %>%
+  pull(gte40db) %>%
+  mean(., na.rm = TRUE)
+```
+
+```{r}
+# Number of tracts where population weighted average annual exposure greater than or equal to 40 dB
+# results in 2321 tracts
+la_tracts_cropped %>%
+  pull(gte40db) %>%
+  sum(., na.rm = TRUE)
+```
+
+## Tracts where population weighted average annual exposure is >= 50 dB
+```{r}
+la_tracts_cropped %>%
+  ggplot() +
+    geom_sf(aes(fill = gte50db)) +
+    scale_fill_viridis_c() +
+    labs(title = "Population-Weighted Exposure by Tract (dB)") +
+    theme_minimal()
+```
+
+```{r}
+# Proportion of tracts where population weighted average annual exposure greater than or equal to 50 dB
+# results in 68% of tracts out of 2493
+la_tracts_cropped %>%
+  pull(gte50db) %>%
+  mean(., na.rm = TRUE)
+```
+
+```{r}
+# Number of tracts where population weighted average annual exposure greater than or equal to 50 dB
+# results in 1695 tracts
+la_tracts_cropped %>%
+  pull(gte50db) %>%
+  sum(., na.rm = TRUE)
+```
+
+## Tracts where population weighted average annual exposure is >= 60 dB
+```{r}
+la_tracts_cropped %>%
+  ggplot() +
+    geom_sf(aes(fill = gte60db)) +
+    scale_fill_viridis_c() +
+    labs(title = "Population-Weighted Exposure by Tract (dB)") +
+    theme_minimal()
+```
+
+```{r}
+# Proportion of tracts where population weighted average annual exposure greater than or equal to 60 dB
+# results in 5.7% of tracts out of 2493
+la_tracts_cropped %>%
+  pull(gte60db) %>%
+  mean(., na.rm = TRUE)
+```
+
+```{r}
+# Number of tracts where population weighted average annual exposure greater than or equal to 60 dB
+# results in 142 tracts
+la_tracts_cropped %>%
+  pull(gte60db) %>%
+  sum(., na.rm = TRUE)
+```
+
+# Export tracts data
+```{r}
+# Output file to .rds
+saveRDS(la_tracts_cropped, str_c("D:\\rwjf_noise\\data\\noise\\lac_pw_db_", year, ".rds"))
+```
