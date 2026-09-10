@@ -22,12 +22,12 @@ embed-resources: true
 #| echo: false
 # -----------------------------------------------------------------------------
 # Carlos Rodriguez, PhD. CU Anschutz Dept. of Family Medicine
-# RWJF HelicopterSleep
+# RWJF Helicopter Noise
 
 # Data processing
 # The purpose of this script is to generate a file where population weighted 
 # noise values are calculated for a given year, using the UCIC noise and 
-# landscan data sets.
+# corresponding landscan data sets.
 # -----------------------------------------------------------------------------
 ```
 
