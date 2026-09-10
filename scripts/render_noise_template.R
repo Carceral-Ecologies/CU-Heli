@@ -10,7 +10,7 @@ library(tidyverse)
 library(here)
 library(furrr)
 
-# Set the input clinics, output format parameters, and number of cores ---------
+# Set the input years, output format parameters, and number of cores ---------
 # by_vars <- c("by_timepoint")
 
 by_vars <- c(2018, 2022, 2023)
@@ -37,12 +37,12 @@ create_reports <- function(by_var) {
     overwrite = TRUE
   )
 
-  # Set file_in to the copied and renamed clinic-specific .qmd file. Serves as
+  # Set file_in to the copied and renamed year-specific .qmd file. Serves as
   # an input to the quarto_render() function
   file_in <- modified_layout_file
 
   # Set file_out to the file name of the rendered report. Serves as a parameter
-  # in the output-file option of the clinic-specific .qmd file.
+  # in the output-file option of the year-specific .qmd file.
   file_out <- str_c(by_var, ".", format)
 
   # Render the report, this will output the report to the root directory.

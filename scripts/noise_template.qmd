@@ -42,10 +42,8 @@ embed-resources: true
 ```
 
 <!-- //////////////////////// REPORT CONFIGURATION //////////////////////// -->
-<!-- This section specifies whether or not to filter the data if the by 
-variable is set to by_clinic, sets rules for displaying pvalues in tables based
-on whether the by variable is set to by_site_type, and sets the test argument 
-to t-test if the argument is by site_type -->
+<!-- This section specifies how to filter the data for a given year. These
+parameters are specified in a driver scriped named render_noise_template.R -->
 
 ```{r}
 year <- params$by_variable
@@ -54,8 +52,8 @@ noise_path_suffix <- "_Noise.csv"
 noise_file <- str_c(noise_path_prefix, year, noise_path_suffix)
 
 
-ls_path_prefix <- "D:\\rwjf_noise\\data\\landscan\\landscan-mosaic_timeseries-"
-ls_path_suffix <- "-assets\\landscan_mosaic_timeseries_"
+ls_path_prefix <- "D:\\rwjf_noise\\data\\landscan\\landscan-global-"
+ls_path_suffix <- "-assets\\landscan-global-"
 
 landscan_path <- str_c(ls_path_prefix, year, ls_path_suffix, year, ".tif")
 ```
@@ -66,14 +64,6 @@ landscan_path <- str_c(ls_path_prefix, year, ls_path_suffix, year, ".tif")
 # has resolution of 1/1200 degree
 # coordinate refeference system (crs) is 4326
 pop <- rast(landscan_path)
-
-# Older version used this file
-# pop <- rast("D:\\rwjf_noise\\data\\landscan\\landscan-mosaic-unitedstates-v1-assets\\landscan-mosaic-unitedstates-v1.tif")
-
-# pop <- rast("D:\\rwjf_noise\\data\\landscan\\landscan-global-2018-assets\\landscan-global-2018.tif")
-
-# crs(pop)
-# res(pop)
 ```
 
 # Load UCIC noise data
@@ -98,7 +88,6 @@ exposure_df %>%
   slice_sample(n = 6)
 ```
 
-
 # Load LA County tracts
 ```{r}
 #%% Prepare LA County tracts object
@@ -108,6 +97,7 @@ options(tigris_use_cache = TRUE)
 suppressMessages({
 # Load LA County tracts as simple features (sf) from tidycensus
 # crs loads as 4269
+# May need tidycensus API to be set
 tracts <- get_acs(
   geography = "tract",
 
@@ -274,9 +264,7 @@ res(la_pop)
 #| eval: false 
 #| echo: false
 
-
 ## Plot the cropped exposure raster overlaid with tracts
-
 ggplot() +
   geom_spatraster(data = exp_landscan_db) +
   geom_sf(data = la_tracts_cropped, fill = NA, color = "white", linewidth = 0.1) +
@@ -287,7 +275,6 @@ ggplot() +
 
 ggplot() +
   geom_spatraster(data = la_pop)
-
 ```
 
 # Approach 1: Calculate the tract level population-weighted values of noise exposure using the linear transformed dB values
