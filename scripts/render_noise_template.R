@@ -1,7 +1,11 @@
 # /////////////////////////////////////////////////////////////////////////////
-# Driver program to render 3 reports using 3 different year's worth of data
-# Settings can be changed in the .qmd document to specify which data source
-# to use
+# Carlos Rodriguez, PhD. CU Anschutz Dept. of Family Medicine
+# RWJF Helicopter Noise
+# 
+# Driver program to render 3 reports using 3 different year's worth of data.
+# Settings can be changed in the noise_template.qmd document to specify which 
+# data source to use for landscan and noise files. This script only specifies
+# the years.
 # 
 # /////////////////////////////////////////////////////////////////////////////
 
@@ -13,7 +17,7 @@ library(furrr)
 # Set the input years, output format parameters, and number of cores ---------
 # by_vars <- c("by_timepoint")
 
-by_vars <- c(2018, 2022, 2023)
+by_vars <- c(2018, 2023)
 
 format <- "html"
 
