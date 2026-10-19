@@ -1,0 +1,475 @@
+---
+title: "LA County Health Survey - 2018"
+date: today
+
+format: 
+  html:
+    toc: true
+
+execute: 
+  echo: false
+  warning: false
+
+embed-resources: true
+---
+
+```{r}
+#| echo: false
+#| eval: false
+# /////////////////////////////////////////////////////////////////////////////
+# Carlos Rodriguez, PhD. CU Anschutz Dept. of Family Medicine
+#
+# LACHS Methodology
+#http://publichealth.lacounty.gov/ha/docs/2022LACHS/Methodology/2023%20LACHS%20Methodology%20Report%20Final.pdf
+
+# Varun's article
+# https://pmc.ncbi.nlm.nih.gov/articles/PMC8887645/
+
+# Weight Variables:
+# POP_WGT - Represents the sampling weights, their sum is close to 8million
+# which is reasonable value for adult population of LA county in 2018.
+# POP_SAMWGT - Represents the scaled population weight, it has a mean of 1, 
+# values range from 0.1 to 9.53
+# /////////////////////////////////////////////////////////////////////////////
+```
+
+```{r}
+library(tidyverse)
+library(gtsummary)
+library(broom)
+library(dfmtbx)
+library(splines)
+library(sf)
+library(spatialreg)
+library(survey)
+```
+
+```{r}
+#| echo: false
+#| eval: false
+# Run noise.qmd
+# specify, but do not run census.R
+# run places.R (will source census.R within)
+# run models
+```
+
+```{r}
+# Load data
+# merged places comes from places.R script
+# Used .rds to preserve geometry column. Saving as .csv removes the <sf> object functionality
+data <- readRDS("D:\\rwjf_noise\\data\\prepped_data\\merged_lachs_2018.rds") 
+
+# data %>%
+#   pull(PHQ) %>%
+#   table()
+
+# Modify PHQ, Depression, Asthma, and General Health to set the Don't know and refused to NA
+# otherwise they will form small groups that may pose problems for model sparsenes
+data <- data %>%
+  mutate(across(c(PHQ, ASTHMA, DEPNOW, HSGEN, HS2PH, HS3MH, HS4ALD), ~ ifelse(.x %in% c("Do not know", "Refused"), NA, .x)))
+
+# Collapse Age group
+data <- data %>%
+  mutate(AGEGROUP_c = 
+    case_match(
+      AGEGROUP,
+      c("18-24", "25-29", "30-39") ~ "18-39",
+      c("40-49", "50-59") ~ "40-59",
+      .default = "60+")
+    )
+
+# Set Refused to NA for GENDERO
+data <- data %>%
+  mutate(GENDERO = ifelse(GENDERO == "Refused", NA, GENDERO)) 
+
+# Collapse race
+data <- data %>%
+  mutate(RACESOP_c = 
+    case_match(
+      RACESOP,
+      c("AI/AN", "Do not know", "Multiracial/Other", "NHOPI", "Refused") ~ "Other/Unknown",
+      .default = RACESOP)
+    ) %>%
+  mutate(RACESOP_c = factor(RACESOP_c, levels = c("White", "African American", "Asian", "Latino", "Other/Unknown")))
+
+# Convert to numeric
+data <- data %>%
+  mutate(across(HS2PH:HS4ALD, ~ as.numeric(.x)))
+
+
+```
+
+# Unweighted Respondent characteristics
+```{r}
+data %>%
+  mutate(has_geoid = ifelse(is.na(GEO_CT), 0, 1)) %>%
+  select(
+    AGEGROUP_c, RACESOP_c, GENDERO, FPL_FIN,
+    PHQ, DEPNOW, ASTHMA, HSGEN, HS2PH, HS3MH, HS4ALD,
+    has_geoid) %>%
+  mutate(across(HS2PH:HS4ALD, ~ as.numeric(.x))) %>%
+  tbl_summary(
+    # by = has_geoid,
+    statistic = list(all_continuous() ~ "{mean} ({sd})"),
+    label = list(
+    AGEGROUP_c ~ "Age",
+    RACESOP_c ~ "Race", 
+    GENDERO ~ "Gender",
+    FPL_FIN ~ "Federal Poverty Line",
+    PHQ ~ "Positive for PHQ2", 
+    DEPNOW ~ "Current Depression", 
+    ASTHMA ~ "Asthma", 
+    HSGEN ~ "Self-reported General Health", 
+    HS2PH ~ "Number of Poor Physical Health Days in the Past 30 Days", 
+    HS3MH ~ "Number of Poor Mental Health Days in the Past 30 Days",
+    HS4ALD ~ "Number of Activity-limited Days in the Past 30 Days",
+    has_geoid ~ "GEOID Available"
+    )
+  ) %>%
+  bold_labels() #%>%
+  # add_overall() %>%
+  # add_p()
+```
+
+## Weighted Respondent Characteristics
+```{r}
+# Create a survey design object to display weighted respondent characteristics
+des <- svydesign(
+    ids = ~1, # Sets sampling units or post stratification units
+    weights = ~POP_WGT, # Sets populations weights
+    data = data
+)
+```
+
+```{r}
+des %>%
+  tbl_svysummary(
+    include = c(AGEGROUP_c, RACESOP_c, GENDERO, FPL_FIN,
+    PHQ, DEPNOW, ASTHMA, HSGEN, HS2PH, HS3MH, HS4ALD),
+    statistic = list(all_continuous() ~ "{mean} ({sd})"),
+    label = list(
+    AGEGROUP_c ~ "Age",
+    RACESOP_c ~ "Race", 
+    GENDERO ~ "Gender",
+    FPL_FIN ~ "Federal Poverty Line",
+    PHQ ~ "Positive for PHQ2", 
+    DEPNOW ~ "Current Depression", 
+    ASTHMA ~ "Asthma", 
+    HSGEN ~ "Self-reported General Health", 
+    HS2PH ~ "Number of Poor Physical Health Days in the Past 30 Days", 
+    HS3MH ~ "Number of Poor Mental Health Days in the Past 30 Days",
+    HS4ALD ~ "Number of Activity-limited Days in the Past 30 Days"
+    # has_geoid ~ "GEOID Available"
+    )
+  ) %>%
+  bold_labels() 
+```
+
+# Number of responses per tract (denominator = all unique geocoded tracts)
+```{r}
+data %>%
+  drop_na(GEO_CT) %>%
+  group_by(GEOID) %>%
+  count() %>%
+  ungroup() %>%
+  select(n) %>%
+  mutate(n = factor(n)) %>%
+  tbl_summary(
+    label = list(n ~ "Number of responses per tract")
+  )
+```
+
+
+# Frequencies & proportions of outcomes with geocoded data
+```{r}
+data %>%
+  mutate(has_geoid = ifelse(is.na(GEO_CT), 0, 1)) %>%
+  mutate(
+    has_phq = ifelse(has_geoid == 1 & !is.na(PHQ), 1, 0),
+    has_dep = ifelse(has_geoid == 1 & !DEPNOW %in% c("Do not know", "Refused"), 1, 0),
+    has_asm= ifelse(has_geoid == 1 & !ASTHMA %in% c("Do not know", "Refused"), 1, 0),
+    has_gen= ifelse(has_geoid == 1 & !HSGEN %in% c("Do not know", "Refused"), 1, 0),
+    has_phd= ifelse(has_geoid == 1 & !HS2PH %in% c("Do not know", "Refused"), 1, 0),
+    has_mhd= ifelse(has_geoid == 1 & !HS3MH %in% c("Do not know", "Refused"), 1, 0)
+  ) %>%
+  select(has_phq:has_mhd) %>%
+  tbl_summary()
+```
+
+
+# PHQ2
+```{r}
+data <- data %>%
+  mutate(PHQ_num = case_match(
+    PHQ,
+    "Yes" ~ 1,
+    "No" ~ 0,
+    .default = NA)) %>%
+  mutate(pw_exp_db_cen = pw_exp_db - mean(pw_exp_db, na.rm = TRUE))
+```
+
+
+## Collapse values within tracts
+* Jun's recommendation
+```{r}
+data_collapsed <- data %>%
+  group_by(GEOID) %>%
+  summarise(
+    mean_phq = mean(PHQ_num)
+  )
+
+data_collapsed <- data_collapsed %>%
+  left_join(., data %>% select(GEOID, pw_exp_db_cen), by = "GEOID")
+
+collapsed_tracts_model <- lm(mean_phq ~ pw_exp_db_cen, data = data_collapsed)
+
+broom::tidy(collapsed_tracts_model)
+```
+
+```{r}
+# multiplied_outcome <- 
+#   data %>%
+#   mutate(outcome = PHQ_num * POP_WGT)
+
+# multiplied_outcome_model <- lm(outcome ~ pw_exp_db_cen, data = multiplied_outcome)
+
+# broom::tidy(multiplied_outcome_model)
+```
+
+## Unadjusted glm model
+
+
+```{r}
+# placed here to harmonize the variable used in the model, although it was originally create
+# during mlm development
+data <- data %>%
+  mutate(pw_exp_db_cen = pw_exp_db - mean(pw_exp_db, na.rm = TRUE))
+
+mod_phq_un_glm <- glm(PHQ_num ~ pw_exp_db_cen, family = "binomial", data = data)
+
+summary(mod_phq_un_glm)
+```
+
+## Unadjusted glmer model
+```{r}
+# This model fails to converge and is nearly unidentifiable
+# lme4::glmer(PHQ_num ~ pw_exp_db + (1 | GEOID), family = binomial(), data = data)
+
+# Unscaled pw_exp_db resulted in very large eigenvlue model nearly 
+# unidentifiable, rescaling to attempt to address the problem
+data <- data %>%
+  mutate(pw_exp_db10 = pw_exp_db / 10)
+
+# Model fails to converge, but pw_exp_db10 addresses unidentifiable warning
+# lme4::glmer(PHQ_num ~ pw_exp_db10 + (1 | GEOID), family = binomial(), data = data)
+
+# Center the db values, using pw_exp_lin to calculate the centering results in errors
+# when converting back to db since some values are negative before log10().
+data <- data %>%
+  mutate(pw_exp_db_cen = pw_exp_db - mean(pw_exp_db, na.rm = TRUE))
+
+# Model converges
+mod_phq_un_glmer <- lme4::glmer(PHQ_num ~ pw_exp_db_cen + (1 | GEOID), family = binomial(), data = data)
+
+summary(mod_phq_un_glmer)
+```
+
+## 50:50 mixture likelihood ratio test
+* Test if adding the random effect for tract improves model fit.
+```{r}
+# From Don Hedeker's MLM notes. Testing the random effect requires the 50:50 
+# mixture approach
+# Results in a significant p-value indicating the random effect improves fit
+lrt <- 2 * (logLik(mod_phq_un_glmer) - logLik(mod_phq_un_glm))
+p <- 0.5 * pchisq(lrt, df = 1, lower.tail = FALSE)
+
+data.frame(
+  LRT = round(as.numeric(lrt), 4),
+  p = round(as.numeric(p), 4)) %>%
+  format_gt_tbl()
+```
+
+
+
+## Unadjusted weighted model
+
+```{r}
+# Create the survey design object again, since there have been some 
+# modifications to the class of some of the variables.
+des <- svydesign(
+    ids = ~1, # Sets sampling units or post stratification units
+    weights = ~POP_WGT, # Sets populations weights
+    data = data
+)
+```
+
+```{r}
+mod_phq_un_wt <- svyglm(
+    PHQ_num ~ pw_exp_db_cen,
+    design = des,
+    family = quasibinomial()
+)
+
+summary(mod_phq_un_wt)
+```
+
+```{r}
+# Comparing the parameter estimate for noise in the unweighted glm model vs the weighted glm model, suggests that the parameter estimates are similar. I get .009 for one and 0.01 for the other respectively, so these are very similar.
+# Suggests that weighting isn't dramatically changing the estimated relationship between X and Y.
+# We may be OK without weighting.
+```
+
+# Unadjusted Weighted Multi-level Model
+```{r}
+# library(WeMix)
+
+# # We don't have a tract level sampling weight, so it's set to  1
+# data <- data %>%
+#   mutate(W2 = 1)
+
+# fit <- mix(
+#   PHQ_num ~ pw_exp_db_cen +
+#     (1 | GEOID),
+#   family=binomial(link="logit"),
+#   weights = c("POP_WGT", "W2"),
+#   data = data
+# )
+
+
+```
+
+
+```{r}
+# summary(fit)
+# Warning message:
+# package ‘WeMix’ was built under R version 4.4.3 
+# Warning message:
+# In mix(PHQ_num ~ pw_exp_db_cen + (1 | GEOID), family = binomial(link = "logit"),  :
+#   There were 1304 rows with missing data. These have been removed.
+# > summary(fit)
+# Call:
+# mix(formula = PHQ_num ~ pw_exp_db_cen + (1 | GEOID), data = data, 
+#     weights = c("POP_WGT", "W2"), family = binomial(link = "logit"))
+
+# Variance terms:
+#  Level Group        Name Variance Std. Error Std.Dev.
+#      2 GEOID (Intercept)     50.8      1.604    7.127
+# Groups:
+#  Level Group n size mean wgt sum wgt
+#      2 GEOID   1974        1    1974
+#      1   Obs   5662     1174 6648590
+
+# Fixed Effects:
+#               Estimate Std. Error t value
+# (Intercept)   -7.84201    0.24298 -32.274
+# pw_exp_db_cen  0.04183    0.05220   0.801
+
+# lnl= -1209489.64 
+```
+
+<!-- ## Adjusted glm -->
+```{r}
+#| echo: false
+#| eval: false
+summary(
+  glm(PHQ_num ~ pw_exp_db + AGEGROUP_c + RACESOP_c + GENDERO + FPL_FIN, family = "binomial", data = data)
+)
+```
+
+```{r}
+#| echo: false
+#| eval: false
+# Model fails to converge with age only, collapsed levels
+data <- data %>%
+  mutate(AGEGROUP_c = 
+    case_match(
+      AGEGROUP,
+      c("18-24", "25-29", "30-39") ~ "18-39",
+      c("40-49", "50-59") ~ "40-59",
+      .default = "60+")
+    )
+
+data %>%
+  pull(AGEGROUP_c) %>%
+  table(., useNA = "ifany")
+
+# Model fails to converge with gender alone at 2 levels
+data %>%
+  pull(GENDERO) %>%
+  table(., useNA = "ifany")
+
+data <- data %>%
+  mutate(GENDERO = ifelse(GENDERO == "Refused", NA, GENDERO))
+
+# Model fails to converge with agegroup collapsed and gender 2 level only
+data <- data %>%
+  mutate(
+    pw_exp_10db_cen =
+      (pw_exp_db - mean(pw_exp_db, na.rm = TRUE)) / 10
+  )
+
+
+```
+
+```{r}
+# Write to SAS
+data %>%
+  mutate(AGE = as.numeric(AGE)) %>%
+  select(-geometry) %>%
+  write_csv( 
+    str_c("D:\\rwjf_noise\\data\\prepped_data\\merged_lachs_", "2018", ".csv"),
+    na = ""
+  )
+```
+
+
+```{r}
+#| echo: false
+#| eval: false
+mod_phq_glmr_adj <- lme4::glmer(
+  PHQ_num ~ pw_exp_10db + AGEGROUP + GENDERO + RACESOP + FPL_FIN + (1 | GEOID), 
+  # PHQ_num ~ pw_exp_10db + GENDERO + (1 | GEOID), 
+  family = binomial(), 
+  data = data)
+
+summary(mod_phq_glmr_adj)
+```
+
+<!-- ## Adjusted glm with rescaled predictor -->
+```{r}
+#| echo: false
+#| eval: false
+mod_phq_glm_adj <- glm(
+  PHQ_num ~ pw_exp_10db + AGEGROUP + GENDERO + RACESOP + FPL_FIN,
+  family = binomial(), 
+  data = data)
+
+summary(mod_phq_glm_adj)
+```
+
+```{r}
+#| echo: false
+#| eval: false
+tract_phq <- data %>%
+  filter(
+    !is.na(PHQ),
+    !is.na(pw_exp_db),
+    !is.na(GENDERO),
+    !is.na(GEOID)
+  ) %>%
+  group_by(GEOID) %>%
+  summarise(
+    n = n(),
+    cases = sum(PHQ_num == 1),
+    noncases = sum(PHQ_num == 0),
+    .groups = "drop"
+  )
+
+tract_phq %>%
+  summarise(
+    n_tracts = n(),
+    no_cases = sum(cases == 0),
+    all_cases = sum(noncases == 0),
+    mixed = sum(cases > 0 & noncases > 0)
+  )
+```

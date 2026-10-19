@@ -43,7 +43,7 @@ individual responses in the sample.
 
 
 /* /////////////////////////// Unadjusted models /////////////////////////// */
-%macro fit_models;
+%macro fit_unadjusted_models;
 %do i = 1 %to %sysfunc(countw(&years));
   %let year = %scan(&years, &i);
 
@@ -78,9 +78,18 @@ individual responses in the sample.
       histogram &dvar;
     run;
 
+    ods output OneWayFreqs=freq_out;
+    proc freq data=data;
+      where not missing(GEOID)
+        and not missing(pw_exp_db_cen)
+        and not missing(&dvar);
+      tables &dvar;
+    run;
+
     /* Set the output for the unadjusted models */
     ods output
         Estimates= _pe
+        NObs = nobs
     ;
 
     ods exclude ClassLevels;
@@ -104,17 +113,48 @@ individual responses in the sample.
     run;
     ods word close;
 
+    /* sub_table_1 */
+    proc sql;
+      create table sub_tab_1 as
+      select
+          "&year." as Year,
+          "&dvar." as DV,
+          N
+      from nobs
+      where Label = "Number of Observations Used";
+    quit;
 
-    /* Add the identifying dependent variable and month */
-    data _pe;
-      set _pe;
-      where label = "pw_exp_db_cen";
-      Year = "&year.";
-      DV = "&dvar.";
-    run;
+    /* sub_table_2 */
+    proc sql outobs=1;
+      create table sub_tab_2 as
+      select
+          "&year." as Year,
+          "&dvar." as DV,
+          ExpEstimate as IRR,
+          ExpLower as Lower,
+          ExpUpper as Upper,
+          Probt as P
+      from _PE;
+    quit;
+
+    /* Combine the sub tables */
+    proc sql;
+        create table unadjusted_row_out as
+        select a.*,
+               b.IRR,
+               b.Lower,
+               b.Upper,
+               b.P
+        from sub_tab_1 as a
+
+        left join sub_tab_2 as b
+            on a.DV = b.DV
+            and a.Year = b.Year
+        ;
+    quit;
 
   /* Append to a master table  */
-    proc append base=all_pe data= _pe force;
+    proc append base=all_unadjusted data= unadjusted_row_out force;
     run;
 
   %end;
@@ -123,7 +163,7 @@ individual responses in the sample.
 
 %mend;
 
-%fit_models;
+%fit_unadjusted_models;
 
 /* Output to .csv files */
 proc export data=ALL_PE
@@ -178,6 +218,7 @@ run;
 
     ods output
         Estimates= _pe_adj
+        NObs = nobs
     ;
 
     ods exclude ClassLevels;
@@ -193,6 +234,7 @@ run;
 
         random intercept / subject=GEOID; 
 
+        /* To output the IRR */
         estimate "pw_exp_db_cen" pw_exp_db_cen 1 / exp cl;
 
         covtest 0;
@@ -200,18 +242,48 @@ run;
     run;
     ods word close;
 
+    /* sub_table_1 */
+    proc sql;
+      create table sub_tab_1 as
+      select
+          "&year." as Year,
+          "&dvar." as DV,
+          N
+      from nobs
+      where Label = "Number of Observations Used";
+    quit;
 
-    /* Add the identifying dependent variable and month and filter to the noise
-      predictor*/
-    data _pe_adj;
-      set _pe_adj;
-      where label = "pw_exp_db_cen";
-      Year = "&year.";
-      DV = "&dvar.";
-    run;
+    /* sub_table_2 */
+    proc sql outobs=1;
+      create table sub_tab_2 as
+      select
+          "&year." as Year,
+          "&dvar." as DV,
+          ExpEstimate as IRR,
+          ExpLower as Lower,
+          ExpUpper as Upper,
+          Probt as P
+      from _PE_ADJ;
+    quit;
+
+    /* Combine the sub tables */
+    proc sql;
+        create table adjusted_row_out as
+        select a.*,
+               b.IRR,
+               b.Lower,
+               b.Upper,
+               b.P
+        from sub_tab_1 as a
+
+        left join sub_tab_2 as b
+            on a.DV = b.DV
+            and a.Year = b.Year
+        ;
+    quit;
 
     /* Append to a master table  */
-    proc append base=all_pe_adj data= _pe_adj force;
+    proc append base=all_adjusted data= adjusted_row_out force;
     run;
 
   %end;
@@ -220,11 +292,11 @@ run;
 
 %mend;
 
-%fit_models;
+%fit_adjusted_models;
 
 /* Output to .csv files */
 proc export data=ALL_PE_ADJ
-    outfile="&root./results/lachs/sas/adjusted_count_dv_glimmix_PEs.csv"
+    outfile="&root./results/lachs/sas/adjusted_count_dv_glimmix.csv"
     dbms=csv
     replace;
 run;

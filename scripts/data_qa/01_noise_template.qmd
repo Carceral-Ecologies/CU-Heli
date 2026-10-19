@@ -451,5 +451,7 @@ la_tracts_cropped %>%
 # Export tracts data
 ```{r}
 # Output file to .rds
-saveRDS(la_tracts_cropped, str_c("D:\\rwjf_noise\\data\\noise\\lac_pw_db_", year, ".rds"))
+# Commented out to focus on data QA while a separate script handles the output looping through
+# different years and different noise variables.
+# saveRDS(la_tracts_cropped, str_c("D:\\rwjf_noise\\data\\noise\\lac_pw_db_", year, ".rds"))
 ```

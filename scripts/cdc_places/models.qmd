@@ -1,0 +1,433 @@
+---
+title: "Insufficient sleep ~ Noise exposure "
+date: today
+
+format: html
+
+execute: 
+  echo: false
+  warning: false
+
+embed-resources: true
+---
+
+```{r}
+# /////////////////////////////////////////////////////////////////////////////
+# Carlos Rodriguez, PhD. CU Anschutz Dept. of Family Medicine
+#
+# /////////////////////////////////////////////////////////////////////////////
+```
+
+```{r}
+library(tidyverse)
+library(ggpattern)
+library(gtsummary)
+library(broom)
+library(dfmtbx)
+# library(splines)
+library(sf)
+library(spatialreg)
+```
+
+```{r}
+# Run noise.qmd
+# specify, but do not run census.R
+# run places.R (will source census.R within)
+# run models
+```
+
+```{r}
+# Load data
+# merged places comes from places.R script
+# Used .rds to preserve geometry column. Saving as .csv removes the <sf> object functionality
+data <- readRDS("D:\\rwjf_noise\\data\\prepped_data\\merged_places_2026-06-22.rds") 
+```
+
+# Number of tracts per data set
+```{r}
+# These were counted in the census_eda.R script.
+data.frame(
+  places = 2324,
+  census = 2498,
+  noise = 2493, # 2 are removed for santa catalina and san clemente islands,
+  places_and_noise = 2000) %>% 
+  format_gt_tbl()
+```
+
+# Plot of Noise exposure and Insufficient Sleep Prevalence
+```{r}
+data %>%
+  select(pw_exp_db, SLEEP_CrudePrev) %>%
+  drop_na() %>%
+  ggplot(aes(x = pw_exp_db, y = SLEEP_CrudePrev)) +
+  geom_point(alpha = 1) +
+  geom_smooth(method = "lm") +
+  theme_minimal() +
+  xlab("Population Weighted Noise Exposure (dB)") +
+  ylab("Insufficient Sleep Prevalence (%)")
+
+# ggsave("sleep_vs_noise_a03.pdf")
+```
+
+<!-- # Plot of average sleep and average noise after binning into 10 noise groups -->
+```{r}
+# Bin the data to see if the hockey stick shape of the plot of raw values is 
+# an artifact.
+# binned <- data %>%
+#   drop_na(pw_exp_db) %>%
+#   mutate(bin = cut_number(pw_exp_db, 10)) %>%
+#   group_by(bin) %>%
+#   summarise(
+#     mean_exposure = mean(pw_exp_db, na.rm = TRUE),
+#     mean_sleep = mean(SLEEP_CrudePrev, na.rm = TRUE),
+#     n = n()
+#   )
+
+# ggplot(binned, aes(mean_exposure, mean_sleep)) +
+#   geom_point(aes(size = n)) +
+#   geom_line() +
+#   theme_minimal()
+```
+
+# Models with a dichotomous predictor of noise exposure
+```{r}
+# Perform Moran's I test
+vars <- c("gte40db", "gte50db", "gte60db")
+
+moran_test <- function(x) {
+  # Create a copy of the main data set in the workspace
+  mod_data <- data
+
+  # Create a formula based on the input predictor variable
+  formula <- as.formula(str_c("SLEEP_CrudePrev ~ ", x))
+  # print(formula)
+
+  # Fit the model
+  model <- lm(formula, data = mod_data, na.action = na.exclude)
+
+  # Get the residuals in a test data frame
+  mod_data <- mod_data %>%
+    mutate(residuals = residuals(model))
+
+  # Drop the rows where values for the model are missing
+  mod_data <- mod_data %>%
+    filter(!is.na(residuals))
+
+  # Plot the 2000 tracts that were included in the analysis
+  centroids <- mod_data %>%
+    filter(!!sym(x) == 1) %>%
+    st_centroid()
+
+  plt <- mod_data %>%
+    ggplot() +
+    geom_sf(aes(fill = SLEEP_CrudePrev), color = NA) +
+    geom_sf(
+      data = centroids,
+      shape = 21,
+      size = .45,
+      stroke = .25,
+      fill = NA,
+      color = "white") +
+    scale_fill_viridis_c() +
+    theme_minimal()
+
+  # Construct a neighbors list from polygon list
+  # *** produced a warning about some observations not having any neighbors 
+  # because the intersection of tracts with noise AND tracts with a CDC Places
+  # outcome results in some tracts without any neighbors
+  nb <- spdep::poly2nb(
+    mod_data, 
+    queen = TRUE)
+
+  # Create the spatial weights from a neighbors list. The zero policy sets
+  # weights vectors of zero length for regions without any neighbors
+  lw <- spdep::nb2listw(
+    nb, 
+    style = "W", # Nick's team used B in this step 
+    zero.policy = TRUE)
+
+  # Moran's I test revealed p less than .05 for all dichotomous variables
+  # There is evidence for spatial auto correlation, need a spatial model
+  moran_results <- spdep::moran.test(
+    mod_data$residuals, #cannot have missing values
+    lw 
+  )
+
+  # print(moran_results)
+
+  # Spatial error model
+  sem <- errorsarlm(
+    formula,
+    data = mod_data,
+    listw = lw,
+    zero.policy = TRUE,
+    na.action = na.exclude
+  )
+
+  return(list(model, plt, moran_results, sem))
+
+}
+
+results <- map(vars, moran_test)
+
+```
+
+
+## Unadjusted Models
+## dB Greater than or equal to 40 dB
+### Unadjusted regression output of a simple linear regression model
+```{r}
+tbl_regression(results[[1]][[1]])
+```
+
+### Plot of Insufficient Sleep Prevalence overlaid with tracts where the average dB value is greater than or equal to 40 dB
+```{r}
+results[[1]][[2]]
+```
+
+### Moran's I
+```{r}
+results[[1]][[3]]
+```
+
+### Spatial error model output
+```{r}
+summary(results[[1]][[4]])
+```
+
+## dB Greater than or equal to 50 dB
+### Unadjusted regression output of a simple linear regression model
+```{r}
+tbl_regression(results[[2]][[1]])
+```
+
+### Plot of Insufficient Sleep Prevalence overlaid with tracts where the average dB value is greater than or equal to 50 dB
+```{r}
+results[[2]][[2]]
+```
+
+### Moran's I
+```{r}
+results[[2]][[3]]
+```
+
+### Spatial error model output
+```{r}
+summary(results[[2]][[4]])
+```
+
+## dB Greater than or equal to 60 dB
+### Unadjusted regression output of a simple linear regression model
+```{r}
+tbl_regression(results[[3]][[1]])
+```
+
+### Plot of Insufficient Sleep Prevalence overlaid with tracts where the average dB value is greater than or equal to 60 dB
+```{r}
+results[[3]][[2]]
+```
+
+### Moran's I
+```{r}
+results[[3]][[3]]
+```
+
+### Spatial error model output
+```{r}
+summary(results[[3]][[4]])
+```
+
+<!-- 
+
+### Adjusted for age, race, and ethnicity
+```{r}
+# Nick's lab had performed some spatial error models
+# Formula 1 "y ~ median_value   + pct_homeowners  + pct_foreign_born +
+#            median_income + black_count +
+#            native_count + latino_count + white_count"
+
+# formula2 <-  "y_night ~ median_value   + pct_homeowners  + pct_foreign_born +
+#            median_income + black_count +
+#            native_count + latino_count + white_count"
+```
+
+```{r}
+# Collect the covariates for using as.formula()
+demographics <- c("median_age", "prop_latino", "prop_white", "prop_black", "prop_native", "prop_asian", "prop_foreign_born")
+formula <- as.formula(
+  str_c(
+    "SLEEP_CrudePrev ~ ",
+    "gte40db + ",
+    paste0(demographics, collapse = " + "))
+    )
+```
+
+```{r}
+mod_40b <- lm(formula, data = data)
+
+summary(mod_40b)
+
+car::vif(mod_40b)
+
+plot(mod_40b)
+```
+
+
+### Adjusted for SES
+
+```{r}
+ses <- c("median_value", "median_income", "prop_owner_occ", "prop_renter_occ", 
+  "prop_bach", "prop_masters", "prop_prof", "prop_tot_edu", 
+  
+  "median_rent", "median_year_built_srs")
+
+formula <- as.formula(
+  str_c(
+    "SLEEP_CrudePrev ~ ",
+    "gte40db + ",
+    paste0(c(demographics, ses), collapse = " + "))
+    )
+```
+
+```{r}
+mod_40c <- lm(formula, data = data)
+
+summary(mod_40c)
+``` -->
+
+<!-- ### Adjusted for comorbidities -->
+
+<!-- ```{r}
+
+```
+
+## dB Greater than or equal to 50 dB
+```{r}
+mod_50a <- lm(SLEEP_CrudePrev ~ gte50db, data = data)
+
+summary(mod_50a)
+```
+
+
+## dB Greater than or equal to 60 dB
+```{r}
+mod_60a <- lm(SLEEP_CrudePrev ~ gte60db, data = data)
+
+summary(mod_60a)
+```
+ -->
+
+
+<!-- ////////////////////////////////////////////////////////////////////// -->
+<!-- 
+# Linear model
+```{r}
+mod_lm <- lm(SLEEP_CrudePrev ~ pw_exposure, data = data)
+
+summary(mod_lm)
+
+plot(mod_lm)
+```
+
+```{r}
+#| echo: false
+#| eval: false
+
+# Interpretation of linear model
+# The coefficient for pw_exposure is 0.22. This is interpreted as a 1-unit 
+# increase in noise exposure is associated with a .22 unit increase in 
+# insufficient sleep. Small but significant effect
+```
+
+
+# Polynomial model with a quadratic term
+```{r}
+# Center the noise exposure variable
+data <- data %>%
+  mutate(pw_exposure_c = pw_exposure - mean(data$pw_exposure, na.rm = TRUE))
+
+mod_pol <- lm(
+  SLEEP_CrudePrev ~ pw_exposure_c + I(pw_exposure_c^2),
+  data = data
+)
+
+summary(mod_pol)
+
+plot(mod_pol)
+```
+
+```{r}
+#| eval: false
+#| echo: false
+
+# Interpretation of polynomial model coefficients using the centered version 
+# of pw_exposure
+# 1. pw_exposure. The population weighted exposure coefficient is .277 and is 
+# significant. The slope between noise and insufficient sleep is .28 at '
+# the average level of noise.
+# 2. the quadratic term is 0.008. It's positive so that for each unit increase
+# in x, the slope increase by 2 * 0.008, so the effect of noise is magnified
+# as it increases.
+
+```
+
+## Test of the quadratic term in the polynomial model vs the linear model
+```{r}
+model_lm <- lm(
+  SLEEP_CrudePrev ~ pw_exposure_c,
+  data = data)
+anova(mod_lm, mod_pol)
+```
+
+# Piecewise linear model with the inflection point set to 50db
+```{r}
+data <- data %>%
+  mutate(
+    above50 = ifelse(pw_exposure > 50, pw_exposure - 50, 0)
+  )
+
+mod_pw <- lm(
+  SLEEP_CrudePrev ~ pw_exposure + above50,
+  data = data
+)
+
+summary(mod_pw)
+
+plot(mod_pw)
+```
+
+```{r}
+#| eval: false
+#| echo: false
+
+# Gives two slopes, one before and after the inflection pointat 50dB
+```
+
+# Splines model
+```{r}
+knots <- quantile(
+  data$pw_exposure,
+  probs = c(0.2, 0.4, 0.6, 0.8),
+  na.rm = TRUE
+)
+
+mod_spl <- lm(
+  SLEEP_CrudePrev ~ ns(
+    pw_exposure,
+    knots = knots),
+  data = data
+)
+```
+
+```{r}
+summary(mod_spl)
+
+plot(mod_spl)
+```
+
+# Compare AICs
+```{r}
+AIC(mod_lm, mod_pol, mod_pw, mod_spl)
+```
+
+ -->

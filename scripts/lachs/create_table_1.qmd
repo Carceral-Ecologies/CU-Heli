@@ -1,0 +1,408 @@
+---
+title: "LA County Health Survey - Tables"
+date: today
+
+format: 
+  docx:
+    reference-doc: "D:\\dfm_inquiry\\reference_docs\\custom-reference-doc.docx"
+    toc: true
+
+execute: 
+  echo: false
+  warning: false
+
+embed-resources: true
+---
+
+```{r}
+#| echo: false
+#| eval: false
+# /////////////////////////////////////////////////////////////////////////////
+# Carlos Rodriguez, PhD. CU Anschutz Dept. of Family Medicine
+#
+# LACHS Methodology
+#http://publichealth.lacounty.gov/ha/docs/2022LACHS/Methodology/2023%20LACHS%20Methodology%20Report%20Final.pdf
+
+# Varun's article
+# https://pmc.ncbi.nlm.nih.gov/articles/PMC8887645/
+
+# Weight Variables:
+# POP_WGT - Represents the sampling weights, their sum is close to 8million
+# which is reasonable value for adult population of LA county in 2018.
+# POP_SAMWGT - Represents the scaled population weight, it has a mean of 1, 
+# values range from 0.1 to 9.53
+# /////////////////////////////////////////////////////////////////////////////
+```
+
+```{r}
+library(tidyverse)
+library(gtsummary)
+library(broom)
+library(dfmtbx)
+library(splines)
+library(sf)
+library(spatialreg)
+library(survey)
+```
+
+```{r}
+#| echo: false
+#| eval: false
+# Run noise.qmd
+# specify, but do not run census.R
+# run places.R (will source census.R within)
+# run models
+```
+
+# 2018
+```{r}
+# Load data
+# merged places comes from places.R script
+# Used .rds to preserve geometry column. Saving as .csv removes the <sf> object functionality
+data_2018 <- readRDS("D:\\rwjf_noise\\data\\prepped_data\\merged_lachs_2018.rds") 
+
+data <- data_2018
+
+# data %>%
+#   pull(PHQ) %>%
+#   table()
+
+# Modify PHQ, Depression, Asthma, and General Health to set the Don't know and refused to NA
+# otherwise they will form small groups that may pose problems for model sparsenes
+data <- data %>%
+  mutate(across(c(PHQ, ASTHMA, DEPNOW, HSGEN, HSPH, HSMH, HSALD), ~ ifelse(.x %in% c("Do not know", "Refused"), NA, .x)))
+
+# Collapse Age group
+data <- data %>%
+  mutate(AGEGROUP_c = 
+    case_match(
+      AGEGROUP,
+      c("18-24", "25-29", "30-39") ~ "18-39",
+      c("40-49", "50-59") ~ "40-59",
+      .default = "60+")
+    )
+
+# Set Refused to NA for GENDERO
+data <- data %>%
+  mutate(GENDER = ifelse(GENDER == "Refused", NA, GENDER)) 
+
+# Collapse race
+data <- data %>%
+  mutate(RACESOP_c = 
+    case_match(
+      RACESOP,
+      c("AI/AN", "Do not know", "Multiracial/Other", "NHOPI", "Refused") ~ "Other/Unknown",
+      .default = RACESOP)
+    ) %>%
+  mutate(RACESOP_c = factor(RACESOP_c, levels = c("White", "African American", "Asian", "Latino", "Other/Unknown")))
+
+# Convert to numeric
+data <- data %>%
+  mutate(across(HSPH:HSALD, ~ as.numeric(.x)))
+
+
+```
+
+# Unweighted Respondent characteristics
+```{r}
+data %>%
+  mutate(has_geoid = ifelse(is.na(GEO_CT), 0, 1)) %>%
+  select(
+    AGEGROUP_c, RACESOP_c, GENDER, FPL_FIN,
+    PHQ, DEPNOW, ASTHMA, HSGEN, HSPH, HSMH, HSALD,
+    has_geoid) %>%
+  mutate(across(HSPH:HSALD, ~ as.numeric(.x))) %>%
+  tbl_summary(
+    # by = has_geoid,
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      c(HSPH, HSMH, HSALD) ~ "{median} ({p25}, {p75})"
+      ),
+    label = list(
+    AGEGROUP_c ~ "Age",
+    RACESOP_c ~ "Race", 
+    GENDER ~ "Gender",
+    FPL_FIN ~ "Federal Poverty Line",
+    PHQ ~ "Positive for PHQ2", 
+    DEPNOW ~ "Current Depression", 
+    ASTHMA ~ "Asthma", 
+    HSGEN ~ "Self-reported General Health", 
+    HSPH ~ "Number of Poor Physical Health Days in the Past 30 Days", 
+    HSMH ~ "Number of Poor Mental Health Days in the Past 30 Days",
+    HSALD ~ "Number of Activity-limited Days in the Past 30 Days",
+    has_geoid ~ "GEOID Available"
+    )
+  ) %>%
+  bold_labels()
+```
+
+## Weighted Respondent Characteristics
+```{r}
+# Create a survey design object to display weighted respondent characteristics
+des <- svydesign(
+    ids = ~1, # Sets sampling units or post stratification units
+    weights = ~POP_WGT, # Sets populations weights
+    data = data
+)
+```
+
+```{r}
+des %>%
+  tbl_svysummary(
+    include = c(AGEGROUP_c, RACESOP_c, GENDER, FPL_FIN,
+    PHQ, DEPNOW, ASTHMA, HSGEN, HSPH, HSMH, HSALD),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      c(HSPH, HSMH, HSALD) ~ "{median} ({p25}, {p75})"
+      ),
+    label = list(
+    AGEGROUP_c ~ "Age",
+    RACESOP_c ~ "Race", 
+    GENDER ~ "Gender",
+    FPL_FIN ~ "Federal Poverty Line",
+    PHQ ~ "Positive for PHQ2", 
+    DEPNOW ~ "Current Depression", 
+    ASTHMA ~ "Asthma", 
+    HSGEN ~ "Self-reported General Health", 
+    HSPH ~ "Number of Poor Physical Health Days in the Past 30 Days", 
+    HSMH ~ "Number of Poor Mental Health Days in the Past 30 Days",
+    HSALD ~ "Number of Activity-limited Days in the Past 30 Days"
+    )
+  ) %>%
+  bold_labels() 
+```
+
+# Number of responses per tract (denominator = all unique geocoded tracts)
+```{r}
+data %>%
+  drop_na(GEO_CT) %>%
+  group_by(GEOID) %>%
+  count() %>%
+  ungroup() %>%
+  select(n) %>%
+  mutate(n = factor(n)) %>%
+  tbl_summary(
+    label = list(n ~ "Number of responses per tract")
+  )
+```
+
+
+# Frequencies & proportions of outcomes with geocoded data
+```{r}
+data %>%
+  mutate(has_geoid = ifelse(is.na(GEO_CT), 0, 1)) %>%
+  mutate(
+    has_phq = ifelse(has_geoid ==1 & !is.na(PHQ_num), 1, 0),
+    has_dep = ifelse(has_geoid ==1 & !is.na(DEPNOW_num), 1, 0),
+    has_asm= ifelse(has_geoid ==1 & !is.na(ASTHMA_num), 1, 0),
+    has_gen= ifelse(has_geoid ==1 & !is.na(HSGEN), 1, 0),
+    has_phd= ifelse(has_geoid ==1 & !is.na(HSGEN), 1, 0),
+    has_mhd= ifelse(has_geoid ==1 & !is.na(HSGEN), 1, 0),
+  ) %>%
+  select(has_phq:has_mhd) %>%
+  tbl_summary(
+    digits = all_categorical() ~ c(0, 2)
+  )
+```
+
+# 2023
+```{r}
+# Load data
+# merged places comes from places.R script
+# Used .rds to preserve geometry column. Saving as .csv removes the <sf> object functionality
+data_2023 <- readRDS("D:\\rwjf_noise\\data\\prepped_data\\merged_lachs_2023.rds") 
+
+data <- data_2023
+
+# data %>%
+#   pull(PHQ) %>%
+#   table()
+
+# Modify PHQ, Depression, Asthma, and General Health to set the Don't know and refused to NA
+# otherwise they will form small groups that may pose problems for model sparsenes
+data <- data %>%
+  mutate(across(c(PHQ, ASTHMA, DEPNOW, HSGEN, HSPH, HSMH, HSALD), ~ ifelse(.x %in% c("Do not know", "Refused"), NA, .x)))
+
+# Collapse Age group
+data <- data %>%
+  mutate(AGEGROUP_c = 
+    case_match(
+      AGEGROUP,
+      c("18-24", "25-29", "30-39") ~ "18-39",
+      c("40-49", "50-59") ~ "40-59",
+      .default = "60+")
+    )
+
+# Set Refused to NA for GENDERO
+data <- data %>%
+  mutate(GENDER = ifelse(GENDER == "Refused", NA, GENDER)) 
+
+# Collapse race
+# data <- data %>%
+#   mutate(RACESOP_c = 
+#     case_match(
+#       RACESOP,
+#       c("AI/AN", "Do not know", "Multiracial/Other", "NHOPI", "Refused") ~ "Other/Unknown",
+#       .default = RACESOP)
+#     ) %>%
+#   mutate(RACESOP_c = factor(RACESOP_c, levels = c("White", "African American", "Asian", "Latino", "Other/Unknown")))
+
+# Convert to numeric
+data <- data %>%
+  mutate(across(HSPH:HSALD, ~ as.numeric(.x)))
+
+
+```
+
+# Unweighted Respondent characteristics
+```{r}
+data %>%
+  mutate(has_geoid = ifelse(is.na(GEO_CT), 0, 1)) %>%
+  select(
+    AGEGROUP_c, RACESOP_c, GENDER, FPL_FIN,
+    PHQ, DEPNOW, ASTHMA, HSGEN, HSPH, HSMH, HSALD,
+    has_geoid) %>%
+  mutate(across(HSPH:HSALD, ~ as.numeric(.x))) %>%
+  tbl_summary(
+    # by = has_geoid,
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      c(HSPH, HSMH, HSALD) ~ "{median} ({p25}, {p75})"
+      ),
+    label = list(
+    AGEGROUP_c ~ "Age",
+    RACESOP_c ~ "Race", 
+    GENDER ~ "Gender",
+    FPL_FIN ~ "Federal Poverty Line",
+    PHQ ~ "Positive for PHQ2", 
+    DEPNOW ~ "Current Depression", 
+    ASTHMA ~ "Asthma", 
+    HSGEN ~ "Self-reported General Health", 
+    HSPH ~ "Number of Poor Physical Health Days in the Past 30 Days", 
+    HSMH ~ "Number of Poor Mental Health Days in the Past 30 Days",
+    HSALD ~ "Number of Activity-limited Days in the Past 30 Days",
+    has_geoid ~ "GEOID Available"
+    )
+  ) %>%
+  bold_labels()
+```
+
+## Weighted Respondent Characteristics
+```{r}
+# Create a survey design object to display weighted respondent characteristics
+des <- svydesign(
+    ids = ~1, # Sets sampling units or post stratification units
+    weights = ~POP_WGT, # Sets populations weights
+    data = data
+)
+```
+
+```{r}
+des %>%
+  tbl_svysummary(
+    include = c(AGEGROUP_c, RACESOP_c, GENDER, FPL_FIN,
+    PHQ, DEPNOW, ASTHMA, HSGEN, HSPH, HSMH, HSALD),
+    statistic = list(
+      all_continuous() ~ "{mean} ({sd})",
+      c(HSPH, HSMH, HSALD) ~ "{median} ({p25}, {p75})"
+      ),
+    label = list(
+    AGEGROUP_c ~ "Age",
+    RACESOP_c ~ "Race", 
+    GENDER ~ "Gender",
+    FPL_FIN ~ "Federal Poverty Line",
+    PHQ ~ "Positive for PHQ2", 
+    DEPNOW ~ "Current Depression", 
+    ASTHMA ~ "Asthma", 
+    HSGEN ~ "Self-reported General Health", 
+    HSPH ~ "Number of Poor Physical Health Days in the Past 30 Days", 
+    HSMH ~ "Number of Poor Mental Health Days in the Past 30 Days",
+    HSALD ~ "Number of Activity-limited Days in the Past 30 Days"
+    )
+  ) %>%
+  bold_labels() 
+```
+
+# Number of responses per tract (denominator = all unique geocoded tracts)
+```{r}
+data %>%
+  drop_na(GEO_CT) %>%
+  group_by(GEOID) %>%
+  count() %>%
+  ungroup() %>%
+  select(n) %>%
+  mutate(n = factor(n)) %>%
+  tbl_summary(
+    label = list(n ~ "Number of responses per tract")
+  )
+```
+
+# Frequencies & proportions of outcomes with geocoded data
+```{r}
+data %>%
+  mutate(has_geoid = ifelse(is.na(GEO_CT), 0, 1)) %>%
+  mutate(
+    has_phq = ifelse(has_geoid ==1 & !is.na(PHQ_num), 1, 0),
+    has_dep = ifelse(has_geoid ==1 & !is.na(DEPNOW_num), 1, 0),
+    has_asm= ifelse(has_geoid ==1 & !is.na(ASTHMA_num), 1, 0),
+    has_gen= ifelse(has_geoid ==1 & !is.na(HSGEN), 1, 0),
+    has_phd= ifelse(has_geoid ==1 & !is.na(HSGEN), 1, 0),
+    has_mhd= ifelse(has_geoid ==1 & !is.na(HSGEN), 1, 0),
+  ) %>%
+  select(has_phq:has_mhd) %>%
+  tbl_summary(
+    digits = all_categorical() ~ c(0, 2)
+  )
+```
+
+# Comparisons of 2018 to 2023 Helicopter Noise
+
+```{r}
+data <- 
+  bind_rows(
+    data_2018 %>%
+      select(pw_exp_db, pw_exp_lin, GEOID) %>%
+      distinct() %>%
+      mutate(year = "2018"),
+    data_2023 %>%
+      select(pw_exp_db, pw_exp_lin, GEOID) %>%
+      distinct() %>%
+      mutate(year = "2023")
+  )
+```
+
+```{r}
+data %>%
+  ggplot(aes(y = pw_exp_lin, x = year)) +
+  geom_boxplot()
+```
+
+```{r}
+# Average out in linear then convert to dB
+data %>%
+  group_by(year) %>%
+  summarise(mean_noise = mean(pw_exp_lin, na.rm = TRUE), .groups = "drop") %>%
+  mutate(mean_noise = 10 * log10(mean_noise))
+```
+
+
+```{r}
+# decibels
+broom.mixed::tidy(
+  lmerTest::lmer(pw_exp_db ~ year + (1 | GEOID), data = data)
+)
+```
+
+```{r}
+# sound energy levels (linear)
+broom.mixed::tidy(
+  lmerTest::lmer(pw_exp_lin ~ year + (1 | GEOID), data = data)
+)
+```
+
+
+```{r}
+# Change in dB if using the linear values in the model
+# Suggests 2023 is much quieter
+-1 * (10 * log10(19528))
+```

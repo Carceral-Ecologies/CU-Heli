@@ -2,7 +2,7 @@
 # Carlos Rodriguez, PhD. CU Anschutz Dept. of Family Medicine
 # RWJF Helicopter Noise
 # 
-# Driver program to render 3 reports using 3 different year's worth of data.
+# Driver program to render 2 reports using 2 different year's worth of data.
 # Settings can be changed in the noise_template.qmd document to specify which 
 # data source to use for landscan and noise files. This script only specifies
 # the years.

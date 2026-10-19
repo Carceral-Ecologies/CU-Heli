@@ -22,9 +22,9 @@ POP_SAMWGT - Represents the normalized population weight. Sums to the number of
 individual responses in the sample.
 */
 /* %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% */
-proc format;
+/* proc format;
   picture pctfmt (round) other="009.9%";
-run;
+run; */
 
 
 /* Map a library to a directory name ----------------------------------------*/
